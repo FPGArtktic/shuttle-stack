@@ -26,7 +26,8 @@ readonly DRAFT_OVERHEAD_MB=256
 readonly KV_BYTES_PER_TOKEN_LAYER=2048
 readonly HEALTH_TIMEOUT=900
 readonly BENCH_PREDICT=64
-readonly PHASES=(detect plan host gpu quadlets models verify bench status)
+readonly PHASES=(detect plan host gpu quadlets models verify bench
+	delegate status)
 readonly EXEC_COMMON="--slot-save-path /cache --flash-attn on --no-webui"
 
 declare -rA SERVER_IP=([long]=10.89.7.10 [fast]=10.89.7.11)
@@ -81,6 +82,7 @@ declare -A model_size=()
 declare -A model_sha=()
 models=()
 
+source_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 user=${USER:-$(id -un)}
 uid=$(id -u)
 config_home=${XDG_CONFIG_HOME:-$HOME/.config}
@@ -134,7 +136,7 @@ usage()
 usage: install.sh [phase...] [options]
 
 Phases always run in this order; without any, all but bench run:
-  detect plan host gpu quadlets models verify bench status
+  detect plan host gpu quadlets models verify bench delegate status
 
 Options:
   --dry-run                  show commands and file changes, change nothing
@@ -321,7 +323,8 @@ parse_args()
 {
 	while (( $# )); do
 		case $1 in
-		detect|plan|host|gpu|quadlets|models|verify|bench|status)
+		detect|plan|host|gpu|quadlets|models|verify|bench|delegate|\
+		status)
 			phases+=("$1") ;;
 		--dry-run)		dry_run=1 ;;
 		--yes)			assume_yes=1 ;;
@@ -351,7 +354,8 @@ parse_args()
 finish_options()
 {
 	if (( ${#phases[@]} == 0 )); then
-		phases=(detect plan host gpu quadlets models verify status)
+		phases=(detect plan host gpu quadlets models verify delegate
+			status)
 	fi
 	models=(long fast)
 	if (( use_draft )); then
@@ -639,6 +643,15 @@ fact_disk()
 		"checked by models"
 }
 
+fact_uv()
+{
+	if command -v uv > /dev/null; then
+		fact uv "$(uv --version | cut -d' ' -f2)" ok
+	else
+		fact uv missing "needed by delegate only"
+	fi
+}
+
 fact_tools()
 {
 	local t missing=""
@@ -672,6 +685,7 @@ load_facts()
 	fact_memory
 	fact_disk
 	fact_tools
+	fact_uv
 	facts_loaded=1
 }
 
@@ -1566,6 +1580,22 @@ phase_bench()
 		done
 	done
 	bench_report "${results[@]}"
+}
+
+# uv builds an isolated environment and puts the launcher on PATH, so
+# the host keeps no Python of its own beyond what the delegate needs.
+phase_delegate()
+{
+	local bin=$HOME/.local/bin/shuttle-delegate
+
+	require_supported
+	command -v uv > /dev/null ||
+		die "uv not found; it builds the delegate environment." \
+			"Install it with:" \
+			"curl -LsSf https://astral.sh/uv/install.sh | sh"
+	run uv tool install --force "$source_dir/delegate"
+	info "register it with an MCP client, for example:"
+	info "  claude mcp add --scope user shuttle -- $bin"
 }
 
 status_units()
