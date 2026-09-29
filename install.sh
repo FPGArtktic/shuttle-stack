@@ -834,6 +834,11 @@ explain_ngl()
 	local usable=$1 model_mib=$2 per_layer_kib=$3 kv_kib=$4 draft=$5
 
 	plan_row long.ngl "~$long_ngl" "usable VRAM / VRAM per layer"
+	if (( long_ngl * 2 < layers )); then
+		plan_row "" "" "warning: under half the layers fit, so" \
+			"generation runs at CPU speed; a smaller --ctx or" \
+			"--no-draft frees VRAM"
+	fi
 	plan_row "" "" "usable $usable MiB = $vram_total total -" \
 		"$vram_used used - $VRAM_RESERVE_MB reserve$draft"
 	if (( use_draft )); then
