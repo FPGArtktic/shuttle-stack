@@ -182,6 +182,43 @@ the network, but neither carries authentication of its own, so anything
 exposed that way needs something in front of it. M0 publishes the servers on
 `127.0.0.1` for the same reason.
 
+### Teaching a client when to reach for it
+
+Registering the server makes the tools available; it does not make a client
+prefer them. An agent with its own file reading will keep using it, because
+that is the habit, and a sentence in one message wears off after a few turns.
+
+The delegate ships instructions of its own, which a client reads along with
+the tool list, and those set the defaults. A standing rule goes in
+`CLAUDE.md`: `~/.claude/CLAUDE.md` applies to every project, a `CLAUDE.md` in
+a project root applies to that one. This repository deliberately ships
+neither, because the rule belongs to whoever runs the stack.
+
+```markdown
+## Delegating to SHUTTLE
+
+Two local llama-servers are reachable through the `shuttle` MCP server.
+Use them to keep bulk text out of context, not to avoid deciding things.
+
+- Before reading a long file only to establish a fact from it, call
+  `shuttle_ask` with a `pattern` that lands on the passage.
+- To pull known fields out of a file, or the same fields out of many,
+  call `shuttle_extract` with a JSON schema.
+- Find things yourself with grep; hand the local model a region, never
+  a search. It is worse at searching and the search is free.
+- Pass a path. Never paste file contents into a tool call.
+- Do not delegate a file you could read in a few hundred tokens: the
+  call costs seconds and the read costs almost nothing.
+- Do not ask about anything the file does not contain. Asked without a
+  text to read, these models invent an answer and sound sure of it.
+- Prefer `server: "long"`. It is both more accurate and faster here;
+  `fast` is for answering several requests at once.
+- `local_tokens` in each reply is the context you saved. If it is
+  small, the call was not worth making.
+```
+
+Keep it short. A rule competing with twenty other rules is a suggestion.
+
 ### What the tools do
 
 Every tool takes a **path**, not text. The file is read on this machine, split
