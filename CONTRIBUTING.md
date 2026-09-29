@@ -84,3 +84,11 @@ models phase, from the Hugging Face API; that case needs network access.
 ```
 tests/smoke.sh
 ```
+
+`tests/commits.sh BASE..HEAD` checks the commit messages of a range
+against the rules above and runs `tests/smoke.sh` on each commit in a
+scratch worktree:
+
+```
+tests/commits.sh origin/main..HEAD
+```
