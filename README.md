@@ -84,12 +84,8 @@ The first command brings the repository. The second reports what the installer
 found and what it intends to do, changing nothing. The third runs every phase
 except `bench`, asking before each command that needs root.
 
-To reach the servers from an agent rather than by hand, register the delegate
-the last phase installed:
-
-```
-claude mcp add --scope user shuttle -- ~/.local/bin/shuttle-delegate
-```
+The last phase installs the delegate; telling an MCP client about it is a
+separate step, described under *Delegating* below.
 
 ## How it works
 
@@ -154,6 +150,41 @@ version is kept as `<name>.bak.<timestamp>`.
 
 The delegate is an MCP server. It reads `stack.env`, talks to the two servers
 over their published ports, and exposes four tools.
+
+### Registering it with a client
+
+The `delegate` phase puts the launcher on PATH. It stops there, because an
+installer should not edit configuration files belonging to a program it did
+not install.
+
+Claude Code:
+
+```
+claude mcp add --scope user shuttle -- ~/.local/bin/shuttle-delegate
+```
+
+Claude Desktop, in `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "shuttle": {
+      "command": "/home/you/.local/bin/shuttle-delegate",
+      "args": ["--transport", "stdio"]
+    }
+  }
+}
+```
+
+Any other MCP client is told the same two things: run that binary, speak stdio.
+
+`stdio` is the default and is what a client on this machine wants. The
+launcher also accepts `sse` and `streamable-http` for a client elsewhere on
+the network, but neither carries authentication of its own, so anything
+exposed that way needs something in front of it. M0 publishes the servers on
+`127.0.0.1` for the same reason.
+
+### What the tools do
 
 Every tool takes a **path**, not text. The file is read on this machine, split
 if it does not fit the server's context, and only the result crosses back. An
