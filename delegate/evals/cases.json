@@ -1,0 +1,227 @@
+[
+  {
+    "id": "contributing-rules",
+    "tool": "extract",
+    "path": "CONTRIBUTING.md",
+    "args": {
+      "schema": {
+        "type": "object",
+        "properties": {
+          "max_subject_characters": {"type": "integer"},
+          "bash_line_limit": {"type": "integer"},
+          "indent_style": {"type": "string"}
+        },
+        "required": ["max_subject_characters", "bash_line_limit",
+                     "indent_style"]
+      },
+      "instructions": "Find the maximum length of a commit subject, the column limit for bash lines, and whether indentation uses tabs or spaces."
+    },
+    "expect": {"fields": {"max_subject_characters": 72,
+                          "bash_line_limit": 80},
+               "field_contains": {"indent_style": "tab"}}
+  },
+  {
+    "id": "install-network",
+    "tool": "extract",
+    "path": "install.sh",
+    "args": {
+      "pattern": "^readonly (SUBNET|GATEWAY|NETWORK)=",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "subnet": {"type": "string"},
+          "gateway": {"type": "string"}
+        },
+        "required": ["subnet", "gateway"]
+      },
+      "instructions": "Find the subnet and the gateway address of the shuttle network."
+    },
+    "expect": {"fields": {"subnet": "10.89.7.0/24", "gateway": "10.89.7.1"}}
+  },
+  {
+    "id": "install-ports",
+    "tool": "extract",
+    "path": "install.sh",
+    "args": {
+      "pattern": "SERVER_PORT=",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "long_port": {"type": "integer"},
+          "fast_port": {"type": "integer"}
+        },
+        "required": ["long_port", "fast_port"]
+      },
+      "instructions": "Find the host port of each server."
+    },
+    "expect": {"fields": {"long_port": 8081, "fast_port": 8082}}
+  },
+  {
+    "id": "install-timeout",
+    "tool": "extract",
+    "path": "install.sh",
+    "args": {
+      "pattern": "HEALTH_TIMEOUT|VRAM_RESERVE_MB",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "health_timeout_seconds": {"type": "integer"},
+          "vram_reserve_mib": {"type": "integer"}
+        },
+        "required": ["health_timeout_seconds", "vram_reserve_mib"]
+      },
+      "instructions": "Find the health timeout in seconds and the reserved VRAM in MiB."
+    },
+    "expect": {"fields": {"health_timeout_seconds": 900,
+                          "vram_reserve_mib": 768}}
+  },
+  {
+    "id": "install-models",
+    "tool": "extract",
+    "path": "install.sh",
+    "args": {
+      "pattern": "declare -A model_file",
+      "context": 8,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "draft_file": {"type": "string"},
+          "fast_file": {"type": "string"}
+        },
+        "required": ["draft_file", "fast_file"]
+      },
+      "instructions": "Find the GGUF file name used for the draft model and for the fast server."
+    },
+    "expect": {"field_contains": {"draft_file": "Qwen3-0.6B",
+                                  "fast_file": "Qwen3-1.7B"}}
+  },
+  {
+    "id": "ask-probe-fallback",
+    "tool": "ask",
+    "path": "install.sh",
+    "args": {
+      "question": "What is added to the container units when the PublishPort probe fails?",
+      "pattern": "probe_publish|extra_network=",
+      "context": 30
+    },
+    "expect": {"found": true, "contains": ["podman"],
+               "absent": ["I do not know"]}
+  },
+  {
+    "id": "ask-draft-variable",
+    "tool": "ask",
+    "path": "install.sh",
+    "args": {
+      "question": "Which environment variable names the draft model?",
+      "pattern": "SPEC_DRAFT_MODEL",
+      "context": 6
+    },
+    "expect": {"found": true, "contains": ["LLAMA_ARG_SPEC_DRAFT_MODEL"]}
+  },
+  {
+    "id": "ask-subid-range",
+    "tool": "ask",
+    "path": "install.sh",
+    "args": {
+      "question": "Which subuid range does the host phase add for the user?",
+      "pattern": "add-subuids",
+      "context": 6
+    },
+    "expect": {"found": true, "contains": ["100000", "165535"]}
+  },
+  {
+    "id": "ask-die-behaviour",
+    "tool": "ask",
+    "path": "CONTRIBUTING.md",
+    "args": {
+      "question": "What must every commit pass, and why?",
+      "pattern": "bisect|smoke.sh"
+    },
+    "expect": {"found": true, "contains": ["smoke"]}
+  },
+  {
+    "id": "ask-refuses-absent-fact",
+    "tool": "ask",
+    "path": "CONTRIBUTING.md",
+    "args": {
+      "question": "What is the maintainer's telephone number?"
+    },
+    "expect": {"found": false}
+  },
+  {
+    "id": "ask-refuses-outside-knowledge",
+    "tool": "ask",
+    "path": "LICENSE",
+    "args": {
+      "question": "Which football club does the author support?"
+    },
+    "expect": {"found": false}
+  },
+  {
+    "id": "classify-readme",
+    "tool": "classify",
+    "path": "README.md",
+    "args": {"labels": ["documentation", "source code", "licence text",
+                        "configuration"]},
+    "expect": {"label": "documentation"}
+  },
+  {
+    "id": "classify-install",
+    "tool": "classify",
+    "path": "install.sh",
+    "args": {"labels": ["documentation", "source code", "licence text",
+                        "configuration"]},
+    "expect": {"label": "source code"}
+  },
+  {
+    "id": "classify-licence",
+    "tool": "classify",
+    "path": "LICENSE",
+    "args": {"labels": ["documentation", "source code", "licence text",
+                        "configuration"]},
+    "expect": {"label": "licence text"}
+  },
+  {
+    "id": "classify-workflow",
+    "tool": "classify",
+    "path": ".github/workflows/ci.yml",
+    "args": {"labels": ["documentation", "source code", "licence text",
+                        "configuration"]},
+    "expect": {"label": "configuration"}
+  },
+  {
+    "id": "classify-language-bash",
+    "tool": "classify",
+    "path": "tests/smoke.sh",
+    "args": {"labels": ["bash", "python", "yaml", "markdown"]},
+    "expect": {"label": "bash"}
+  },
+  {
+    "id": "classify-language-python",
+    "tool": "classify",
+    "path": "delegate/shuttle_delegate/chunking.py",
+    "args": {"labels": ["bash", "python", "yaml", "markdown"]},
+    "expect": {"label": "python"}
+  },
+  {
+    "id": "classify-language-yaml",
+    "tool": "classify",
+    "path": ".github/workflows/release.yml",
+    "args": {"labels": ["bash", "python", "yaml", "markdown"]},
+    "expect": {"label": "yaml"}
+  },
+  {
+    "id": "summarise-chunking",
+    "tool": "summarise",
+    "path": "delegate/shuttle_delegate/chunking.py",
+    "args": {"words": 60},
+    "expect": {"contains_any": ["chunk", "split", "piece", "limit"]}
+  },
+  {
+    "id": "summarise-contributing",
+    "tool": "summarise",
+    "path": "CONTRIBUTING.md",
+    "args": {"words": 80},
+    "expect": {"contains_any": ["commit", "style", "test"]}
+  }
+]
