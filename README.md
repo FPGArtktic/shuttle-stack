@@ -25,7 +25,6 @@ agent.
 | Speculative decoding | working — Qwen3-0.6B draft, 2.15x on generation where it fits in VRAM |
 | Internal network | working — `10.89.7.0/24`, `Internal=true`, no route out |
 | Direct host ports | working — `127.0.0.1:8081` and `:8082`, measured to reach an internal network |
-| KV slot save and restore | working — `/slots/{id}?action=save`, verified round trip |
 | Model download | working — size and sha256 from the Hugging Face tree API, resumable |
 | Benchmarks | working — `bench` writes JSON with the configuration it measured |
 | `shuttle_status` | working — which servers answer, which model each holds, how large its context is |
@@ -50,11 +49,11 @@ asking little of the model that does it. SHUTTLE draws the boundary there: the
 agent decides what needs doing and a local model does it, so the tokens spent
 are the ones spent on judgement. The server is `llama-server` from llama.cpp
 rather than Ollama because delegation needs three things Ollama does not
-expose. A session can be suspended and resumed only if the KV cache can be
-written to disk and read back, structured output is reliable only with a
-grammar the server enforces, and a caller can size its own requests only if
-`n_ctx` per slot is stated rather than inferred. Those three are the whole
-argument; everything else Ollama does, it does well.
+expose. Structured output is reliable only with a schema the server itself
+enforces, so that a label can only be one of the labels offered and a field
+can only have the shape asked for, and a caller can size its own requests
+only if `n_ctx` per slot is stated rather than inferred. Those two are the
+whole argument; everything else Ollama does, it does well.
 
 ## Requirements
 
@@ -137,7 +136,6 @@ The installer writes these files, and nothing else:
 | `~/.config/containers/systemd/shuttle-long.container` | the long server unit |
 | `~/.config/containers/systemd/shuttle-fast.container` | the fast server unit |
 | `~/.local/share/shuttle/models/*.gguf` | the three model files |
-| `~/.local/share/shuttle/cache/{long,fast}/` | KV slot dumps |
 | `~/.local/state/shuttle/install.log` | every command that changed the system |
 | `~/.local/state/shuttle/bench-*.json` | benchmark results with their configuration |
 | `/etc/cdi/nvidia.yaml` | the CDI specification, written as root by the `gpu` phase |
@@ -303,7 +301,7 @@ Every flag is shown by `./install.sh --help`.
 | `--fast-model REPO FILE` | the same for `shuttle-fast` |
 | `--draft-model REPO FILE` | the same for the draft model |
 | `--bench-tokens N` | prompt size for `bench`; repeat the flag for several |
-| `--prefix DIR` | where the models and the KV cache live |
+| `--prefix DIR` | where the models live |
 | `--force-distro arch\|ubuntu` | skip detection; for tests only |
 
 `HF_TOKEN` in the environment is sent to Hugging Face. It is written to a
@@ -329,9 +327,8 @@ estimate will be wrong.
 
 ## Verification and benchmarks
 
-`verify` starts both units, waits for `/health`, sends one completion to each
-server and performs a KV save and restore on `shuttle-long`. It answers the
-question "is this installation working at all". The `pp` and `tg` columns it
+`verify` starts both units, waits for `/health` and sends one completion to
+each server. It answers the question "is this installation working at all". The `pp` and `tg` columns it
 prints come from a 32-token completion and are too short to be a measurement.
 
 `bench` is the measurement. For each server and each prompt size it builds a
@@ -460,8 +457,12 @@ trade is not acceptable.
 ## Roadmap
 
 - **M1 — delegate.** Done: see *Delegating* above.
-- **M2 — sessions and KV.** Named sessions on top of the slot save and restore
-  that M0 verifies, so a long context survives a restart.
+- **M2 — measured behaviour.** A fixed set of questions with known answers,
+  run against both servers, so that what the models are good at is a number
+  rather than an impression. Named sessions on top of KV slot dumps were the
+  earlier plan and were dropped: measured here, restoring a 305 MiB dump of
+  4085 tokens saved nothing at all over the prompt cache the server already
+  keeps, and cost 76 KB of disk per token to do it.
 - **M3 — WEFT.** Shared conventions with
   [WEFT](https://github.com/FPGArtktic/weft-mcp) so both tools can be used by
   the same agent.

@@ -28,7 +28,7 @@ readonly HEALTH_TIMEOUT=900
 readonly BENCH_PREDICT=64
 readonly PHASES=(detect plan host gpu quadlets models verify bench
 	delegate status)
-readonly EXEC_COMMON="--slot-save-path /cache --flash-attn on --no-webui"
+readonly EXEC_COMMON="--flash-attn on --no-webui"
 
 declare -rA SERVER_IP=([long]=10.89.7.10 [fast]=10.89.7.11)
 declare -rA SERVER_PORT=([long]=8081 [fast]=8082)
@@ -91,7 +91,6 @@ unit_dir=$config_home/containers/systemd
 data_dir=${XDG_DATA_HOME:-$HOME/.local/share}/shuttle
 state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/shuttle
 models_dir=""
-cache_dir=""
 tmp_dir=""
 stamp=""
 hf_auth=()
@@ -362,7 +361,6 @@ finish_options()
 		models+=(draft)
 	fi
 	models_dir=$data_dir/models
-	cache_dir=$data_dir/cache
 	stamp=$(date +%Y%m%d-%H%M%S)
 }
 
@@ -890,7 +888,7 @@ plan_servers()
 	server_ctx=([long]=$long_ctx [fast]=$FAST_CTX)
 	server_ngl=([long]=$long_ngl [fast]=0)
 	server_slots=([long]=1 [fast]=$FAST_SLOTS)
-	plan_row long.np 1 "KV q8_0, flash attention, slot save to /cache"
+	plan_row long.np 1 "KV q8_0, flash attention"
 	plan_row fast.model "${model_file[fast]}" "${model_repo[fast]}"
 	plan_row fast.image "${IMAGE_CPU##*/}" \
 		"CPU only: the GPU belongs to long"
@@ -1231,7 +1229,6 @@ ContainerName=shuttle-$role
 Network=$NETWORK.network:ip=${SERVER_IP[$role]}
 EnvironmentFile=$config_dir/$role.env
 Volume=$models_dir:/models:ro,z
-Volume=$cache_dir/$role:/cache:rw,Z
 Exec=${SERVER_EXEC[$role]}
 HealthCmd=curl -fsS -o /dev/null http://127.0.0.1:8080/health
 HealthInterval=30s
@@ -1311,7 +1308,7 @@ phase_quadlets()
 		render_env "$role" > "$tmp_dir/$role.env"
 		check_env_names "$role"
 	done
-	run mkdir -p "$models_dir" "$cache_dir/long" "$cache_dir/fast"
+	run mkdir -p "$models_dir"
 	install_file "$config_dir/long.env" < "$tmp_dir/long.env"
 	install_file "$config_dir/fast.env" < "$tmp_dir/fast.env"
 	install_file "$config_dir/stack.env" < <(render_stack_env)
@@ -1467,24 +1464,6 @@ smoke_completion()
 		<<< "$out"
 }
 
-slot_action()
-{
-	api long "/slots/0?action=$1" --json @- <<< '{"filename": "smoke.bin"}'
-}
-
-kv_roundtrip()
-{
-	local file=$cache_dir/long/smoke.bin out saved restored
-
-	out=$(slot_action save) || die "shuttle-long: slot save failed"
-	saved=$(jq -r '.n_saved // empty' <<< "$out")
-	run test -f "$file" || die "slot save did not create $file"
-	out=$(slot_action restore) || die "shuttle-long: slot restore failed"
-	restored=$(jq -r '.n_restored // empty' <<< "$out")
-	run rm -f "$file"
-	printf 'kv save/restore\tshuttle-long\tok\t%s saved\t%s restored\n' \
-		"${saved:--}" "${restored:--}"
-}
 
 phase_verify()
 {
@@ -1500,7 +1479,6 @@ phase_verify()
 	for role in long fast; do
 		rows+=("completion"$'\t'"$(smoke_completion "$role")")
 	done
-	rows+=("$(kv_roundtrip)")
 	printf '%s\n' "${rows[@]}" | table 16 14 8 12
 }
 
