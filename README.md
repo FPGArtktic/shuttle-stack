@@ -242,8 +242,8 @@ deciding what matters. Keep the choosing, hand over the reading.
 - **Do not delegate a small file.** A call costs three to twenty seconds
   against a fraction of one for reading it directly. Delegation pays from the
   point where the file would otherwise fill thousands of tokens of context.
-- **`shuttle-long` for quality, `shuttle-fast` for throughput.** Classifying
-  suits the fast server; extraction and questions suit the long one.
+- **Use `shuttle-long` unless you have a reason not to.** On this machine it
+  is both better and faster; see the evaluation below.
 - **Read `local_tokens` in every reply.** It is the work the machine did, and
   therefore the work your context did not have to hold.
 
@@ -251,6 +251,45 @@ A worked pair, both measured on this machine: `install.sh` at 35 KB summarised
 for 13260 local tokens, and `CONTRIBUTING.md` yielding its subject-length
 limit, linter and indent style for 1410. Neither file entered the caller's
 context.
+
+### How often it is right
+
+`delegate/evals/` holds twenty cases, each a file already in this tree, a
+tool, its arguments and an expectation taken from the source. Two of them
+expect a refusal, which is the half that matters: a model that answers
+everything scores full marks on questions that have answers, and the failure
+worth catching is the confident answer to a question the file does not
+address. It needs a running stack, so it is not part of CI.
+
+```
+python -m evals.run --server both
+```
+
+| Tool | `shuttle-long` | `shuttle-fast` |
+|---|---|---|
+| `extract` | 5 / 5 | 5 / 5 |
+| `ask` | 6 / 6 | 6 / 6 |
+| `summarise` | 2 / 2 | 2 / 2 |
+| `classify` | 7 / 7 | **5 / 7** |
+| total | **20 / 20** | 18 / 20 |
+| seconds | **72** | 631 |
+
+Two things in that table are worth reading twice.
+
+`shuttle-fast` is not faster. It took 631 seconds against 72, nearly nine
+times longer, because `shuttle-long` has thirteen layers on the GPU and a
+draft model in front of it while the fast server is pure CPU. The name
+describes the model, not the latency, and on this hardware the smaller model
+is the slower choice. It earns its place by answering four requests at once,
+not by answering one sooner.
+
+The small model's two failures were both `classify`, and both on a long
+document: it called `README.md` licence text, and a GitHub workflow
+documentation. Given a narrow region it was right every time, and it refused
+both unanswerable questions as cleanly as the large one. So the small model
+is usable for what it is given in a few hundred tokens and unreliable when
+asked to judge a whole file, which is the same shape as everything else
+measured here.
 
 ### Why the text comes before the question
 
