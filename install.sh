@@ -8,14 +8,42 @@ set -Eeuo pipefail
 shopt -s nullglob
 
 readonly PODMAN_MIN=409			# 4.9 as encoded by version_code()
-readonly PHASES=(detect)
+readonly IMAGE_CUDA=ghcr.io/ggml-org/llama.cpp:server-cuda
+readonly IMAGE_CPU=ghcr.io/ggml-org/llama.cpp:server
+readonly HF_URL=https://huggingface.co
+readonly NETWORK=shuttle
+readonly NATIVE_CTX=32768		# Qwen3 without YaRN
+readonly FAST_CTX=16384
+readonly FAST_SLOTS=4
+readonly VRAM_RESERVE_MB=768
+readonly DRAFT_OVERHEAD_MB=256
+# q8_0 KV of Qwen3-8B: 8 KV heads * 128 dims * (K + V) * 1 byte.
+readonly KV_BYTES_PER_TOKEN_LAYER=2048
+readonly PHASES=(detect plan)
 
+declare -rA SERVER_PORT=([long]=8081 [fast]=8082)
 
 phases=()
 dry_run=0
 use_gpu=1
+use_draft=1
+expose_direct=1
+opt_ctx=""
+opt_ngl=""
+opt_threads=""
+layers=36
 force_distro=""
 
+declare -A model_repo=(
+	[long]=unsloth/Qwen3-8B-GGUF
+	[fast]=unsloth/Qwen3-1.7B-GGUF
+	[draft]=unsloth/Qwen3-0.6B-GGUF
+)
+declare -A model_file=(
+	[long]=Qwen3-8B-Q4_K_M.gguf
+	[fast]=Qwen3-1.7B-Q8_0.gguf
+	[draft]=Qwen3-0.6B-Q8_0.gguf
+)
 
 user=${USER:-$(id -un)}
 uid=$(id -u)
@@ -23,6 +51,7 @@ data_dir=${XDG_DATA_HOME:-$HOME/.local/share}/shuttle
 state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/shuttle
 models_dir=""
 tmp_dir=""
+hf_auth=()
 cleanups=()
 
 # Filled by load_facts().
@@ -39,20 +68,42 @@ cores=0
 mem_total_kib=0
 mem_avail_kib=0
 
+# Filled by load_plan().
+plan=()
+plan_loaded=0
+plan_threads=0
+long_ctx=0
+long_ngl=0
+draft_ngl=0
+declare -A server_image=()
+declare -A server_device=()
+
 usage()
 {
 	cat <<EOF
 usage: install.sh [phase...] [options]
 
 Phases always run in this order; without any, all of them run:
-  detect
+  detect plan
 
 Options:
   --dry-run                  show commands and file changes, change nothing
+  --ctx N                    context of shuttle-long (default: from RAM)
+  --ngl N                    layers of shuttle-long on the GPU
+  --threads N                CPU threads of both servers (default: cores)
+  --layers N                 layers of the long model (default: 36)
   --no-gpu                   run shuttle-long on the CPU as well
+  --no-draft                 disable speculative decoding on shuttle-long
+  --expose-direct            publish 127.0.0.1:8081 and :8082 (default)
+  --no-expose-direct         reach the servers only via the shuttle network
+  --long-model REPO FILE     Hugging Face GGUF for shuttle-long
+  --fast-model REPO FILE     Hugging Face GGUF for shuttle-fast
+  --draft-model REPO FILE    Hugging Face GGUF for the draft model
   --force-distro arch|ubuntu skip distribution detection (tests only)
   --prefix DIR               models and KV cache location
                              (default: ~/.local/share/shuttle)
+
+HF_TOKEN in the environment is sent to Hugging Face if set.
 EOF
 }
 
@@ -133,9 +184,29 @@ run()
 	"$@"
 }
 
+# Leading zeros are refused because bash arithmetic reads them as octal.
+need_number()
+{
+	[[ $2 =~ ^(0|[1-9][0-9]*)$ ]] ||
+		usage_die "$1 expects a number, got '$2'"
+	(( $2 >= $3 )) || usage_die "$1 must be at least $3"
+}
+
 set_value()
 {
 	case $1 in
+	--ctx)
+		need_number "$1" "$2" 512
+		opt_ctx=$2 ;;
+	--ngl)
+		need_number "$1" "$2" 0
+		opt_ngl=$2 ;;
+	--threads)
+		need_number "$1" "$2" 1
+		opt_threads=$2 ;;
+	--layers)
+		need_number "$1" "$2" 1
+		layers=$2 ;;
 	--prefix)
 		[[ $2 == /* ]] || usage_die "--prefix needs an absolute path"
 		data_dir=$2 ;;
@@ -146,19 +217,39 @@ set_value()
 	esac
 }
 
+set_model()
+{
+	local role=${1#--}
+
+	role=${role%-model}
+	[[ $2 =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] ||
+		usage_die "$1: '$2' is not a Hugging Face REPO (owner/name)"
+	[[ $3 == *.gguf && $3 != */* ]] ||
+		usage_die "$1: '$3' is not a GGUF file name"
+	model_repo[$role]=$2
+	model_file[$role]=$3
+}
+
 # A long but flat switch, one line per option.
 parse_args()
 {
 	while (( $# )); do
 		case $1 in
-		detect)
+		detect|plan)
 			phases+=("$1") ;;
 		--dry-run)		dry_run=1 ;;
 		--no-gpu)		use_gpu=0 ;;
-		--prefix|--force-distro)
+		--no-draft)		use_draft=0 ;;
+		--expose-direct)	expose_direct=1 ;;
+		--no-expose-direct)	expose_direct=0 ;;
+		--ctx|--ngl|--threads|--layers|--prefix|--force-distro)
 			(( $# >= 2 )) || usage_die "$1 needs a value"
 			set_value "$1" "$2"
 			shift ;;
+		--long-model|--fast-model|--draft-model)
+			(( $# >= 3 )) || usage_die "$1 needs REPO FILE"
+			set_model "$1" "$2" "$3"
+			shift 2 ;;
 		-h|--help)
 			usage
 			exit 0 ;;
@@ -172,9 +263,20 @@ parse_args()
 finish_options()
 {
 	if (( ${#phases[@]} == 0 )); then
-		phases=(detect)
+		phases=(detect plan)
 	fi
 	models_dir=$data_dir/models
+}
+
+# The token goes into a header file so that it never appears in the
+# printed commands or in the log.
+setup_hf_auth()
+{
+	if [[ -z ${HF_TOKEN:-} ]]; then
+		return 0
+	fi
+	printf 'Authorization: Bearer %s\n' "$HF_TOKEN" > "$tmp_dir/hf-auth"
+	hf_auth=(-H "@$tmp_dir/hf-auth")
 }
 
 wanted()
@@ -444,6 +546,182 @@ load_facts()
 	facts_loaded=1
 }
 
+hf_entry()
+{
+	local repo=$1 name=$2 url json
+
+	url=$HF_URL/api/models/$repo/tree/main
+	json=$(curl -fsSL "${hf_auth[@]}" "$url") ||
+		die "cannot list $repo ($url)"
+	# The tree API reports the LFS sha256 as lfs.oid.
+	jq -er --arg f "$name" '.[] | select(.path == $f)
+		| "\(.lfs.size // .size) \(.lfs.oid)"' <<< "$json" ||
+		die "$repo has no file '$name'; not guessing another name"
+}
+
+model_bytes()
+{
+	local role=$1 path=$models_dir/${model_file[$1]} entry
+
+	if [[ -f $path ]]; then
+		stat -c %s "$path"
+		return 0
+	fi
+	entry=$(hf_entry "${model_repo[$role]}" "${model_file[$role]}")
+	printf '%s\n' "${entry%% *}"
+}
+
+plan_row()
+{
+	plan+=("$1"$'\t'"$2"$'\t'"${*:3}")
+}
+
+plan_threads()
+{
+	if [[ -n $opt_threads ]]; then
+		plan_threads=$opt_threads
+		plan_row threads "$plan_threads" "--threads"
+	else
+		plan_threads=$cores
+		plan_row threads "$plan_threads" "physical cores for both" \
+			"servers; they contend only when both are busy"
+	fi
+}
+
+plan_images()
+{
+	server_image=([long]=$IMAGE_CPU [fast]=$IMAGE_CPU)
+	server_device=([long]="" [fast]="")
+	if (( gpu_used )); then
+		server_image[long]=$IMAGE_CUDA
+		server_device[long]=nvidia.com/gpu=all
+	fi
+	plan_row long.image "${server_image[long]##*/}" \
+		"${server_device[long]:-no GPU device}"
+	plan_row long.model "${model_file[long]}" "${model_repo[long]}"
+}
+
+# Thresholds are decimal GB, as in the specification, so that a nominal
+# 24 GB machine is not demoted by the memory its firmware reserves.
+plan_ctx()
+{
+	local bytes=$(( mem_total_kib * 1024 ))
+
+	if [[ -n $opt_ctx ]]; then
+		long_ctx=$opt_ctx
+		plan_row long.ctx "$long_ctx" "--ctx"
+	elif (( bytes >= 24000000000 )); then
+		long_ctx=$NATIVE_CTX
+		plan_row long.ctx "$long_ctx" \
+			"RAM >= 24 GB: Qwen3 native maximum without YaRN"
+	elif (( bytes >= 12000000000 )); then
+		long_ctx=16384
+		plan_row long.ctx "$long_ctx" "RAM 12-24 GB"
+	else
+		long_ctx=8192
+		plan_row long.ctx "$long_ctx" "RAM below 12 GB"
+	fi
+	plan_yarn
+}
+
+plan_yarn()
+{
+	local scale factor
+
+	if (( long_ctx <= NATIVE_CTX )); then
+		return 0
+	fi
+	scale=$(( (long_ctx * 100 + NATIVE_CTX - 1) / NATIVE_CTX ))
+	factor=$(printf '%d.%02d' $(( scale / 100 )) $(( scale % 100 )))
+	plan_row long.rope "yarn x$factor" \
+		"explicit --ctx above $NATIVE_CTX needs YaRN"
+}
+
+plan_ngl()
+{
+	if (( ! gpu_used )); then
+		[[ ${opt_ngl:-0} == 0 ]] || die "--ngl $opt_ngl needs a GPU"
+		plan_row long.ngl 0 "no GPU in use"
+		return 0
+	fi
+	if (( use_draft )); then
+		draft_ngl=all
+	fi
+	if [[ -n $opt_ngl ]]; then
+		long_ngl=$(( opt_ngl < layers ? opt_ngl : layers ))
+		plan_row long.ngl "$long_ngl" "--ngl"
+		return 0
+	fi
+	estimate_ngl
+}
+
+estimate_ngl()
+{
+	local bytes model_mib draft_mib usable kv_kib per_layer_kib draft=""
+
+	bytes=$(model_bytes long)
+	model_mib=$(( bytes / 1048576 ))
+	usable=$(( vram_total - vram_used - VRAM_RESERVE_MB ))
+	if (( use_draft )); then
+		bytes=$(model_bytes draft)
+		draft_mib=$(( bytes / 1048576 ))
+		usable=$(( usable - draft_mib - DRAFT_OVERHEAD_MB ))
+		draft=" - draft ($draft_mib + $DRAFT_OVERHEAD_MB)"
+	fi
+	kv_kib=$(( long_ctx * KV_BYTES_PER_TOKEN_LAYER / 1024 ))
+	per_layer_kib=$(( model_mib * 1024 / layers + kv_kib ))
+	long_ngl=$(( usable > 0 ? usable * 1024 / per_layer_kib : 0 ))
+	long_ngl=$(( long_ngl > layers ? layers : long_ngl ))
+	plan_row long.ngl "~$long_ngl" "usable VRAM / VRAM per layer"
+	plan_row "" "" "usable $usable MiB = $vram_total total -" \
+		"$vram_used used - $VRAM_RESERVE_MB reserve$draft"
+	plan_row "" "" "per layer $(( per_layer_kib / 1024 )) MiB =" \
+		"$model_mib MiB / $layers layers + KV q8_0" \
+		"$(( kv_kib / 1024 )) MiB at ctx $long_ctx"
+}
+
+plan_draft()
+{
+	if (( ! use_draft )); then
+		plan_row long.draft off "--no-draft"
+		return 0
+	fi
+	plan_row long.draft "${model_file[draft]}" \
+		"speculative decoding, draft ngl $draft_ngl"
+}
+
+plan_servers()
+{
+	plan_row long.np 1 "KV q8_0, flash attention, slot save to /cache"
+	plan_row fast.model "${model_file[fast]}" "${model_repo[fast]}"
+	plan_row fast.image "${IMAGE_CPU##*/}" \
+		"CPU only: the GPU belongs to long"
+	plan_row fast.np "$FAST_SLOTS" "parallel slots"
+	plan_row fast.ctx "$FAST_CTX" \
+		"-c is the total; unified KV lets one slot use all of it"
+	if (( expose_direct )); then
+		plan_row direct "127.0.0.1:${SERVER_PORT[long]} long" \
+			"and 127.0.0.1:${SERVER_PORT[fast]} fast"
+	else
+		plan_row direct off "only via the $NETWORK network"
+	fi
+}
+
+load_plan()
+{
+	if (( plan_loaded )); then
+		return 0
+	fi
+	load_facts
+	plan_threads
+	plan_images
+	plan_ctx
+	plan_ngl
+	plan_draft
+	plan_servers
+	plan_loaded=1
+}
+
 phase_detect()
 {
 	load_facts
@@ -457,6 +735,15 @@ phase_detect()
 	fi
 }
 
+phase_plan()
+{
+	load_plan
+	{
+		printf 'setting\tvalue\treason (~ marks an estimate)\n'
+		printf '%s\n' "${plan[@]}"
+	} | table 12 22
+}
+
 main()
 {
 	local phase
@@ -464,6 +751,7 @@ main()
 	parse_args "$@"
 	finish_options
 	tmp_dir=$(mktemp -d)
+	setup_hf_auth
 	for phase in "${PHASES[@]}"; do
 		if wanted "$phase"; then
 			step "$phase"
