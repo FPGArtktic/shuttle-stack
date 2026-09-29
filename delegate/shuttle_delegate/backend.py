@@ -20,11 +20,12 @@ class BackendError(RuntimeError):
 
 @dataclass(frozen=True)
 class Completion:
-    """One answer, with what it cost."""
+    """One answer, with what it cost and whether it is whole."""
 
     content: str
     tokens_in: int
     tokens_out: int
+    truncated: bool = False
 
     @property
     def tokens(self) -> int:
@@ -82,25 +83,43 @@ class Backend:
         answer = self._request("/tokenize", {"content": text}, HEALTH_TIMEOUT)
         return len(answer.get("tokens", []))
 
-    def complete(
+    def chat(
         self,
         prompt: str,
         n_predict: int,
         temperature: float = 0.2,
-        json_schema: dict | None = None,
+        schema: dict | None = None,
     ) -> Completion:
+        """Ask once, through the template the model was trained on.
+
+        Thinking is off: Qwen3 reasons before answering by default, and
+        a budget spent on reasoning is a budget not spent on the answer.
+        Left on, a short n_predict returns an empty string.
+        """
         payload: dict = {
-            "prompt": prompt,
-            "n_predict": n_predict,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": n_predict,
             "temperature": temperature,
-            "cache_prompt": True,
+            "chat_template_kwargs": {"enable_thinking": False},
         }
-        if json_schema is not None:
-            payload["json_schema"] = json_schema
-        answer = self._request("/completion", payload, self.timeout)
-        timings = answer.get("timings", {})
+        if schema is not None:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": "result", "schema": schema},
+            }
+        answer = self._request("/v1/chat/completions", payload, self.timeout)
+        try:
+            choice = answer["choices"][0]
+            content = choice["message"]["content"] or ""
+        except (KeyError, IndexError) as error:
+            raise BackendError(
+                f"shuttle-{self.role}: unexpected answer shape: "
+                f"{str(answer)[:200]}"
+            ) from error
+        usage = answer.get("usage", {})
         return Completion(
-            content=answer.get("content", "").strip(),
-            tokens_in=int(timings.get("prompt_n", 0)),
-            tokens_out=int(timings.get("predicted_n", 0)),
+            content=content.strip(),
+            tokens_in=int(usage.get("prompt_tokens", 0)),
+            tokens_out=int(usage.get("completion_tokens", 0)),
+            truncated=choice.get("finish_reason") == "length",
         )
