@@ -24,7 +24,7 @@ readonly DRAFT_OVERHEAD_MB=256
 # q8_0 KV of Qwen3-8B: 8 KV heads * 128 dims * (K + V) * 1 byte.
 readonly KV_BYTES_PER_TOKEN_LAYER=2048
 readonly HEALTH_TIMEOUT=900
-readonly PHASES=(detect plan host gpu quadlets models)
+readonly PHASES=(detect plan host gpu quadlets models verify)
 readonly EXEC_COMMON="--slot-save-path /cache --flash-attn on --no-webui"
 
 declare -rA SERVER_IP=([long]=10.89.7.10 [fast]=10.89.7.11)
@@ -88,6 +88,7 @@ stamp=""
 hf_auth=()
 cleanups=()
 changed=0
+route=()
 
 # Filled by load_facts().
 facts=()
@@ -124,7 +125,7 @@ usage()
 usage: install.sh [phase...] [options]
 
 Phases always run in this order; without any, all of them run:
-  detect plan host gpu quadlets models
+  detect plan host gpu quadlets models verify
 
 Options:
   --dry-run                  show commands and file changes, change nothing
@@ -294,7 +295,7 @@ parse_args()
 {
 	while (( $# )); do
 		case $1 in
-		detect|plan|host|gpu|quadlets|models)
+		detect|plan|host|gpu|quadlets|models|verify)
 			phases+=("$1") ;;
 		--dry-run)		dry_run=1 ;;
 		--yes)			assume_yes=1 ;;
@@ -323,7 +324,7 @@ parse_args()
 finish_options()
 {
 	if (( ${#phases[@]} == 0 )); then
-		phases=(detect plan host gpu quadlets models)
+		phases=(detect plan host gpu quadlets models verify)
 	fi
 	models=(long fast)
 	if (( use_draft )); then
@@ -1265,6 +1266,94 @@ phase_models()
 	for role in "${pending[@]}"; do
 		fetch_model "$role"
 	done
+}
+
+# Sets route to the curl command that reaches server $1 at path $2: the
+# host port, or a curl container on the internal network.
+set_route()
+{
+	local role=$1 path=$2
+
+	shift 2
+	if (( expose_direct )); then
+		route=(curl -fsS "$@"
+			"http://127.0.0.1:${SERVER_PORT[$role]}$path")
+	else
+		route=(podman run --rm -i --network "$NETWORK" "$IMAGE_CURL"
+			-fsS "$@" "http://shuttle-$role:8080$path")
+	fi
+}
+
+api()
+{
+	set_route "$@"
+	run "${route[@]}"
+}
+
+wait_healthy()
+{
+	local role=$1 unit=shuttle-$1.service waited=0
+
+	info "waiting for $unit to load its model (up to ${HEALTH_TIMEOUT}s)"
+	until api "$role" /health < /dev/null > /dev/null 2>&1; do
+		run systemctl --user is-active --quiet "$unit" ||
+			die "$unit is not running;" \
+				"see journalctl --user -u $unit"
+		(( waited < HEALTH_TIMEOUT )) ||
+			die "$unit: no /health after ${HEALTH_TIMEOUT}s"
+		sleep 5
+		waited=$(( waited + 5 ))
+	done
+}
+
+smoke_completion()
+{
+	local role=$1 body out
+
+	body=$(jq -n '{prompt: "The capital of Poland is", n_predict: 32}')
+	out=$(api "$role" /completion --json @- <<< "$body") ||
+		die "shuttle-$role: /completion failed"
+	jq -r --arg s "shuttle-$role" '[$s, "ok",
+		(.timings.prompt_per_second * 10 | round / 10),
+		(.timings.predicted_per_second * 10 | round / 10)] | @tsv' \
+		<<< "$out"
+}
+
+slot_action()
+{
+	api long "/slots/0?action=$1" --json @- <<< '{"filename": "smoke.bin"}'
+}
+
+kv_roundtrip()
+{
+	local file=$cache_dir/long/smoke.bin out saved restored
+
+	out=$(slot_action save) || die "shuttle-long: slot save failed"
+	saved=$(jq -r '.n_saved // empty' <<< "$out")
+	run test -f "$file" || die "slot save did not create $file"
+	out=$(slot_action restore) || die "shuttle-long: slot restore failed"
+	restored=$(jq -r '.n_restored // empty' <<< "$out")
+	run rm -f "$file"
+	printf 'kv save/restore\tshuttle-long\tok\t%s saved\t%s restored\n' \
+		"${saved:--}" "${restored:--}"
+}
+
+phase_verify()
+{
+	local role rows=()
+
+	require_supported
+	run systemctl --user daemon-reload
+	run systemctl --user start shuttle-long.service shuttle-fast.service
+	for role in long fast; do
+		wait_healthy "$role"
+	done
+	rows+=("test"$'\t'"server"$'\t'"result"$'\t'"pp tok/s"$'\t'"tg tok/s")
+	for role in long fast; do
+		rows+=("completion"$'\t'"$(smoke_completion "$role")")
+	done
+	rows+=("$(kv_roundtrip)")
+	printf '%s\n' "${rows[@]}" | table 16 14 8 12
 }
 
 main()
