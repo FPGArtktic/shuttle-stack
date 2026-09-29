@@ -10,8 +10,12 @@ shopt -s nullglob
 readonly PODMAN_MIN=409			# 4.9 as encoded by version_code()
 readonly IMAGE_CUDA=ghcr.io/ggml-org/llama.cpp:server-cuda
 readonly IMAGE_CPU=ghcr.io/ggml-org/llama.cpp:server
+readonly IMAGE_CURL=docker.io/curlimages/curl
 readonly HF_URL=https://huggingface.co
 readonly NETWORK=shuttle
+readonly SUBNET=10.89.7.0/24
+readonly GATEWAY=10.89.7.1
+readonly PROBE=shuttle-probe
 readonly NATIVE_CTX=32768		# Qwen3 without YaRN
 readonly FAST_CTX=16384
 readonly FAST_SLOTS=4
@@ -19,9 +23,16 @@ readonly VRAM_RESERVE_MB=768
 readonly DRAFT_OVERHEAD_MB=256
 # q8_0 KV of Qwen3-8B: 8 KV heads * 128 dims * (K + V) * 1 byte.
 readonly KV_BYTES_PER_TOKEN_LAYER=2048
-readonly PHASES=(detect plan host gpu)
+readonly HEALTH_TIMEOUT=900
+readonly PHASES=(detect plan host gpu quadlets)
+readonly EXEC_COMMON="--slot-save-path /cache --flash-attn on --no-webui"
 
+declare -rA SERVER_IP=([long]=10.89.7.10 [fast]=10.89.7.11)
 declare -rA SERVER_PORT=([long]=8081 [fast]=8082)
+declare -rA SERVER_EXEC=(
+	[long]="$EXEC_COMMON --cache-type-k q8_0 --cache-type-v q8_0"
+	[fast]="$EXEC_COMMON"
+)
 
 # Every difference between the supported distributions lives here.
 declare -rA DISTRO=(
@@ -62,12 +73,18 @@ declare -A model_file=(
 
 user=${USER:-$(id -un)}
 uid=$(id -u)
+config_home=${XDG_CONFIG_HOME:-$HOME/.config}
+config_dir=$config_home/shuttle
+unit_dir=$config_home/containers/systemd
 data_dir=${XDG_DATA_HOME:-$HOME/.local/share}/shuttle
 state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/shuttle
 models_dir=""
+cache_dir=""
 tmp_dir=""
+stamp=""
 hf_auth=()
 cleanups=()
+changed=0
 
 # Filled by load_facts().
 facts=()
@@ -90,8 +107,13 @@ plan_threads=0
 long_ctx=0
 long_ngl=0
 draft_ngl=0
+extra_network=""
 declare -A server_image=()
 declare -A server_device=()
+declare -A server_ctx=()
+declare -A server_ngl=()
+declare -A server_slots=()
+declare -A server_env=()
 
 usage()
 {
@@ -99,7 +121,7 @@ usage()
 usage: install.sh [phase...] [options]
 
 Phases always run in this order; without any, all of them run:
-  detect plan host gpu
+  detect plan host gpu quadlets
 
 Options:
   --dry-run                  show commands and file changes, change nothing
@@ -269,7 +291,7 @@ parse_args()
 {
 	while (( $# )); do
 		case $1 in
-		detect|plan|host|gpu)
+		detect|plan|host|gpu|quadlets)
 			phases+=("$1") ;;
 		--dry-run)		dry_run=1 ;;
 		--yes)			assume_yes=1 ;;
@@ -298,9 +320,11 @@ parse_args()
 finish_options()
 {
 	if (( ${#phases[@]} == 0 )); then
-		phases=(detect plan host gpu)
+		phases=(detect plan host gpu quadlets)
 	fi
 	models_dir=$data_dir/models
+	cache_dir=$data_dir/cache
+	stamp=$(date +%Y%m%d-%H%M%S)
 }
 
 # The token goes into a header file so that it never appears in the
@@ -634,6 +658,7 @@ plan_images()
 {
 	server_image=([long]=$IMAGE_CPU [fast]=$IMAGE_CPU)
 	server_device=([long]="" [fast]="")
+	server_env=([long]="" [fast]="LLAMA_ARG_KV_UNIFIED=1"$'\n')
 	if (( gpu_used )); then
 		server_image[long]=$IMAGE_CUDA
 		server_device[long]=nvidia.com/gpu=all
@@ -675,6 +700,9 @@ plan_yarn()
 	fi
 	scale=$(( (long_ctx * 100 + NATIVE_CTX - 1) / NATIVE_CTX ))
 	factor=$(printf '%d.%02d' $(( scale / 100 )) $(( scale % 100 )))
+	server_env[long]+="LLAMA_ARG_ROPE_SCALING_TYPE=yarn"$'\n'
+	server_env[long]+="LLAMA_ARG_ROPE_SCALE=$factor"$'\n'
+	server_env[long]+="LLAMA_ARG_YARN_ORIG_CTX=$NATIVE_CTX"$'\n'
 	plan_row long.rope "yarn x$factor" \
 		"explicit --ctx above $NATIVE_CTX needs YaRN"
 }
@@ -724,16 +752,23 @@ estimate_ngl()
 
 plan_draft()
 {
+	local draft=/models/${model_file[draft]}
+
 	if (( ! use_draft )); then
 		plan_row long.draft off "--no-draft"
 		return 0
 	fi
+	server_env[long]+="LLAMA_ARG_SPEC_DRAFT_MODEL=$draft"$'\n'
+	server_env[long]+="LLAMA_ARG_N_GPU_LAYERS_DRAFT=$draft_ngl"$'\n'
 	plan_row long.draft "${model_file[draft]}" \
 		"speculative decoding, draft ngl $draft_ngl"
 }
 
 plan_servers()
 {
+	server_ctx=([long]=$long_ctx [fast]=$FAST_CTX)
+	server_ngl=([long]=$long_ngl [fast]=0)
+	server_slots=([long]=1 [fast]=$FAST_SLOTS)
 	plan_row long.np 1 "KV q8_0, flash attention, slot save to /cache"
 	plan_row fast.model "${model_file[fast]}" "${model_repo[fast]}"
 	plan_row fast.image "${IMAGE_CPU##*/}" \
@@ -873,6 +908,263 @@ phase_gpu()
 	root nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
 	run podman run --rm --device nvidia.com/gpu=all \
 		--entrypoint nvidia-smi "$IMAGE_CUDA"
+}
+
+pull_images()
+{
+	local image images=("${server_image[@]}")
+	local -A seen=()
+
+	if (( ! expose_direct )); then
+		images+=("$IMAGE_CURL")
+	fi
+	for image in "${images[@]}"; do
+		if [[ -z ${seen[$image]:-} ]]; then
+			seen[$image]=1
+			run podman pull "$image"
+		fi
+	done
+}
+
+probe_cleanup()
+{
+	podman rm -f "$PROBE" >/dev/null 2>&1 || true
+	podman network rm -f "$PROBE" >/dev/null 2>&1 || true
+}
+
+probe_wait_internal()
+{
+	local i code
+
+	for (( i = 0; i < 30; i++ )); do
+		code=$(podman run --rm --network "$PROBE" \
+			--entrypoint curl "$IMAGE_CPU" -s -o /dev/null \
+			-w '%{http_code}' "http://$PROBE:8080/health") || true
+		if [[ $code == [1-5][0-9][0-9] ]]; then
+			return 0
+		fi
+		sleep 1
+	done
+	die "PublishPort probe inconclusive: nothing answered inside" \
+		"the internal network within 30 s"
+}
+
+# Whether rootless PublishPort reaches a container on an Internal=true
+# network depends on the Podman and netavark versions, so it is measured
+# on the installed Podman.  llama-server without a model starts in router
+# mode, which is enough of a listener.
+probe_publish()
+{
+	local address code
+
+	extra_network=""
+	if (( ! expose_direct )); then
+		return 0
+	fi
+	if (( dry_run )); then
+		info "dry-run: PublishPort probe not run; units assume it works"
+		return 0
+	fi
+	cleanups+=(probe_cleanup)
+	probe_cleanup
+	run podman network create --internal "$PROBE" >/dev/null
+	run podman run -d --name "$PROBE" --network "$PROBE" \
+		-p 127.0.0.1::8080 "$IMAGE_CPU" --host 0.0.0.0 --port 8080 \
+		>/dev/null
+	probe_wait_internal
+	address=$(podman port "$PROBE" 8080/tcp)
+	code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+		"http://$address/health") || true
+	probe_cleanup
+	if [[ $code != 000 ]]; then
+		info "PublishPort reaches the internal network"
+		return 0
+	fi
+	extra_network=podman
+	info "PublishPort does not reach Internal=true networks here;" \
+		"adding Network=podman, which gives the containers egress"
+}
+
+# A renamed variable is silently ignored by llama-server (the draft model
+# already moved to LLAMA_ARG_SPEC_DRAFT_MODEL), so the image is asked.
+check_env_names()
+{
+	local role=$1 help name device=()
+
+	if (( dry_run )); then
+		info "dry-run: $role.env not checked against the image --help"
+		return 0
+	fi
+	if [[ -n ${server_device[$role]} ]]; then
+		device=(--device "${server_device[$role]}")
+	fi
+	help=$(podman run --rm "${device[@]}" "${server_image[$role]}" \
+		--help 2>&1) || die "${server_image[$role]} --help failed"
+	while IFS='=' read -r name _; do
+		if [[ $name == LLAMA_ARG_* && $help != *"(env: $name)"* ]]; then
+			die "${server_image[$role]} does not know $name"
+		fi
+	done < "$tmp_dir/$role.env"
+}
+
+render_env()
+{
+	local role=$1
+
+	cat <<EOF
+# Generated by shuttle install.sh; local edits are overwritten.
+LLAMA_ARG_MODEL=/models/${model_file[$role]}
+LLAMA_ARG_ALIAS=shuttle-$role
+LLAMA_ARG_CTX_SIZE=${server_ctx[$role]}
+LLAMA_ARG_N_GPU_LAYERS=${server_ngl[$role]}
+LLAMA_ARG_THREADS=$plan_threads
+LLAMA_ARG_N_PARALLEL=${server_slots[$role]}
+LLAMA_ARG_HOST=0.0.0.0
+LLAMA_ARG_PORT=8080
+EOF
+	printf '%s' "${server_env[$role]}"
+}
+
+render_stack_env()
+{
+	local role name
+
+	printf '# Generated by shuttle install.sh; local edits are'
+	printf ' overwritten.\n'
+	printf 'SHUTTLE_NETWORK=%s\n' "$NETWORK"
+	for role in long fast; do
+		name=SHUTTLE_${role^^}
+		printf '%s_URL=http://shuttle-%s:8080\n' "$name" "$role"
+		printf '%s_IP=%s\n' "$name" "${SERVER_IP[$role]}"
+		if (( expose_direct )); then
+			printf '%s_DIRECT_PORT=%s\n' "$name" \
+				"${SERVER_PORT[$role]}"
+		fi
+	done
+}
+
+render_network()
+{
+	cat <<EOF
+# Generated by shuttle install.sh; local edits are overwritten.
+[Unit]
+Description=SHUTTLE internal network (no egress)
+
+[Network]
+NetworkName=$NETWORK
+Subnet=$SUBNET
+Gateway=$GATEWAY
+Internal=true
+EOF
+}
+
+# The address is given as a network option rather than IP= because
+# Podman refuses --ip once a second network is attached.
+render_container()
+{
+	local role=$1
+
+	cat <<EOF
+# Generated by shuttle install.sh; local edits are overwritten.
+[Unit]
+Description=SHUTTLE $role llama-server
+
+[Container]
+Image=${server_image[$role]}
+ContainerName=shuttle-$role
+Network=$NETWORK.network:ip=${SERVER_IP[$role]}
+EnvironmentFile=$config_dir/$role.env
+Volume=$models_dir:/models:ro,z
+Volume=$cache_dir/$role:/cache:rw,Z
+Exec=${SERVER_EXEC[$role]}
+HealthCmd=curl -fsS -o /dev/null http://127.0.0.1:8080/health
+HealthInterval=30s
+HealthStartPeriod=${HEALTH_TIMEOUT}s
+EOF
+	if [[ -n $extra_network ]]; then
+		printf 'Network=%s\n' "$extra_network"
+	fi
+	if [[ -n ${server_device[$role]} ]]; then
+		printf 'AddDevice=%s\n' "${server_device[$role]}"
+	fi
+	if (( expose_direct )); then
+		printf 'PublishPort=127.0.0.1:%s:8080\n' "${SERVER_PORT[$role]}"
+	fi
+	cat <<EOF
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=$HEALTH_TIMEOUT
+
+[Install]
+WantedBy=default.target
+EOF
+}
+
+show_diff()
+{
+	local old=$1
+
+	if [[ ! -f $old ]]; then
+		old=/dev/null
+	fi
+	diff -u --label "$1" --label "$1 (new)" "$old" "$2" > "$2.diff" ||
+		[[ $? -eq 1 ]]
+	sed 's/^/    /' "$2.diff" >&2
+}
+
+# Files are rewritten only when their content changes, and the previous
+# version is kept, so a rerun is cheap and every change is reversible.
+install_file()
+{
+	local dst=$1 new
+
+	new=$(mktemp -p "$tmp_dir")
+	cat > "$new"
+	if [[ -f $dst ]] && cmp -s "$new" "$dst"; then
+		info "unchanged: $dst"
+		return 0
+	fi
+	show_diff "$dst" "$new"
+	if [[ -f $dst ]]; then
+		run cp -p "$dst" "$dst.bak.$stamp"
+	fi
+	run install -D -m 0644 "$new" "$dst"
+	changed=1
+}
+
+apply_changes()
+{
+	if (( ! changed )); then
+		return 0
+	fi
+	run systemctl --user daemon-reload
+	run systemctl --user try-restart shuttle-long.service \
+		shuttle-fast.service
+}
+
+phase_quadlets()
+{
+	local role
+
+	require_supported
+	load_plan
+	pull_images
+	probe_publish
+	for role in long fast; do
+		render_env "$role" > "$tmp_dir/$role.env"
+		check_env_names "$role"
+	done
+	run mkdir -p "$models_dir" "$cache_dir/long" "$cache_dir/fast"
+	install_file "$config_dir/long.env" < "$tmp_dir/long.env"
+	install_file "$config_dir/fast.env" < "$tmp_dir/fast.env"
+	install_file "$config_dir/stack.env" < <(render_stack_env)
+	install_file "$unit_dir/$NETWORK.network" < <(render_network)
+	for role in long fast; do
+		install_file "$unit_dir/shuttle-$role.container" \
+			< <(render_container "$role")
+	done
+	apply_changes
 }
 
 main()
