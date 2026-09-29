@@ -62,6 +62,7 @@ opt_ctx=""
 opt_ngl=""
 opt_threads=""
 layers=36
+draft_layers=28
 bench_tokens=(2048 8192)
 bench_custom=0
 force_distro=""
@@ -117,6 +118,8 @@ plan_threads=0
 long_ctx=0
 long_ngl=0
 draft_ngl=0
+draft_weights_mib=0
+draft_kv_mib=0
 extra_network=""
 declare -A server_image=()
 declare -A server_device=()
@@ -140,6 +143,7 @@ Options:
   --ngl N                    layers of shuttle-long on the GPU
   --threads N                CPU threads of both servers (default: cores)
   --layers N                 layers of the long model (default: 36)
+  --draft-layers N           layers of the draft model (default: 28)
   --no-gpu                   run shuttle-long on the CPU as well
   --no-draft                 disable speculative decoding on shuttle-long
   --expose-direct            publish 127.0.0.1:8081 and :8082 (default)
@@ -274,6 +278,9 @@ set_value()
 	--layers)
 		need_number "$1" "$2" 1
 		layers=$2 ;;
+	--draft-layers)
+		need_number "$1" "$2" 1
+		draft_layers=$2 ;;
 	--bench-tokens)
 		need_number "$1" "$2" 1
 		add_bench_size "$2" ;;
@@ -322,8 +329,8 @@ parse_args()
 		--no-draft)		use_draft=0 ;;
 		--expose-direct)	expose_direct=1 ;;
 		--no-expose-direct)	expose_direct=0 ;;
-		--ctx|--ngl|--threads|--layers|--bench-tokens|--prefix|\
-		--force-distro)
+		--ctx|--ngl|--threads|--layers|--draft-layers|\
+		--bench-tokens|--prefix|--force-distro)
 			(( $# >= 2 )) || usage_die "$1 needs a value"
 			set_value "$1" "$2"
 			shift ;;
@@ -763,26 +770,53 @@ plan_ngl()
 	estimate_ngl
 }
 
+# llama.cpp sizes the draft context from the target context and offers no
+# option to cap it, so the draft KV follows --ctx and outgrows the draft
+# weights.  Every Qwen3 size uses 8 KV heads of 128 dimensions, so a
+# draft layer costs what a long layer costs.
+draft_budget()
+{
+	local bytes kib
+
+	bytes=$(model_bytes draft)
+	draft_weights_mib=$(( bytes / 1048576 ))
+	kib=$(( draft_layers * long_ctx * KV_BYTES_PER_TOKEN_LAYER / 1024 ))
+	draft_kv_mib=$(( kib / 1024 ))
+}
+
 estimate_ngl()
 {
-	local bytes model_mib draft_mib usable kv_kib per_layer_kib draft=""
+	local bytes model_mib usable kv_kib per_layer_kib draft=""
 
 	bytes=$(model_bytes long)
 	model_mib=$(( bytes / 1048576 ))
 	usable=$(( vram_total - vram_used - VRAM_RESERVE_MB ))
 	if (( use_draft )); then
-		bytes=$(model_bytes draft)
-		draft_mib=$(( bytes / 1048576 ))
-		usable=$(( usable - draft_mib - DRAFT_OVERHEAD_MB ))
-		draft=" - draft ($draft_mib + $DRAFT_OVERHEAD_MB)"
+		draft_budget
+		usable=$(( usable - draft_weights_mib - draft_kv_mib ))
+		usable=$(( usable - DRAFT_OVERHEAD_MB ))
+		draft=" - draft"
 	fi
 	kv_kib=$(( long_ctx * KV_BYTES_PER_TOKEN_LAYER / 1024 ))
 	per_layer_kib=$(( model_mib * 1024 / layers + kv_kib ))
 	long_ngl=$(( usable > 0 ? usable * 1024 / per_layer_kib : 0 ))
 	long_ngl=$(( long_ngl > layers ? layers : long_ngl ))
+	explain_ngl "$usable" "$model_mib" "$per_layer_kib" "$kv_kib" "$draft"
+}
+
+explain_ngl()
+{
+	local usable=$1 model_mib=$2 per_layer_kib=$3 kv_kib=$4 draft=$5
+
 	plan_row long.ngl "~$long_ngl" "usable VRAM / VRAM per layer"
 	plan_row "" "" "usable $usable MiB = $vram_total total -" \
 		"$vram_used used - $VRAM_RESERVE_MB reserve$draft"
+	if (( use_draft )); then
+		plan_row "" "" "draft $draft_weights_mib MiB weights +" \
+			"$draft_kv_mib MiB KV over $draft_layers layers +" \
+			"$DRAFT_OVERHEAD_MB MiB overhead; its context" \
+			"follows --ctx and cannot be capped"
+	fi
 	plan_row "" "" "per layer $(( per_layer_kib / 1024 )) MiB =" \
 		"$model_mib MiB / $layers layers + KV q8_0" \
 		"$(( kv_kib / 1024 )) MiB at ctx $long_ctx"
