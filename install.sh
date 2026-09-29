@@ -25,7 +25,7 @@ readonly DRAFT_OVERHEAD_MB=256
 readonly KV_BYTES_PER_TOKEN_LAYER=2048
 readonly HEALTH_TIMEOUT=900
 readonly BENCH_PREDICT=64
-readonly PHASES=(detect plan host gpu quadlets models verify bench)
+readonly PHASES=(detect plan host gpu quadlets models verify bench status)
 readonly EXEC_COMMON="--slot-save-path /cache --flash-attn on --no-webui"
 
 declare -rA SERVER_IP=([long]=10.89.7.10 [fast]=10.89.7.11)
@@ -128,7 +128,7 @@ usage()
 usage: install.sh [phase...] [options]
 
 Phases always run in this order; without any, all but bench run:
-  detect plan host gpu quadlets models verify bench
+  detect plan host gpu quadlets models verify bench status
 
 Options:
   --dry-run                  show commands and file changes, change nothing
@@ -311,7 +311,7 @@ parse_args()
 {
 	while (( $# )); do
 		case $1 in
-		detect|plan|host|gpu|quadlets|models|verify|bench)
+		detect|plan|host|gpu|quadlets|models|verify|bench|status)
 			phases+=("$1") ;;
 		--dry-run)		dry_run=1 ;;
 		--yes)			assume_yes=1 ;;
@@ -341,7 +341,7 @@ parse_args()
 finish_options()
 {
 	if (( ${#phases[@]} == 0 )); then
-		phases=(detect plan host gpu quadlets models verify)
+		phases=(detect plan host gpu quadlets models verify status)
 	fi
 	models=(long fast)
 	if (( use_draft )); then
@@ -1449,6 +1449,72 @@ phase_bench()
 		done
 	done
 	bench_report "${results[@]}"
+}
+
+status_units()
+{
+	local unit state
+
+	for unit in shuttle-network shuttle-long shuttle-fast; do
+		state=$(systemctl --user is-active "$unit.service" \
+			2>/dev/null) || true
+		printf 'unit\t%s\t%s\n' "$unit" "${state:-unknown}"
+	done
+}
+
+status_health()
+{
+	local role
+
+	# Read-only, so it runs even under --dry-run.
+	for role in long fast; do
+		set_route "$role" /health
+		if "${route[@]}" < /dev/null > /dev/null 2>&1; then
+			printf 'health\tshuttle-%s\tok\n' "$role"
+		else
+			printf 'health\tshuttle-%s\tdown\n' "$role"
+		fi
+	done
+}
+
+status_models()
+{
+	local role path
+
+	for role in "${models[@]}"; do
+		path=$models_dir/${model_file[$role]}
+		if [[ -f $path ]]; then
+			printf 'model\t%s\t%s\n' "${model_file[$role]}" \
+				"$(gib $(( $(stat -c %s "$path") / 1024 )))"
+		else
+			printf 'model\t%s\tmissing\n' "${model_file[$role]}"
+		fi
+	done
+	printf 'disk\t%s\t%s free\n' "$data_dir" \
+		"$(gib "$(free_kib "$data_dir")")"
+}
+
+status_bench()
+{
+	local files=("$state_dir"/bench-*.json)
+
+	if (( ${#files[@]} == 0 )); then
+		printf 'bench\tnone\trun ./install.sh bench\n'
+		return 0
+	fi
+	jq -r --arg f "${files[-1]##*/}" '.results[] | ["bench", $f,
+		"\(.server) \(.tokens) tok: pp \(.pp) tg \(.tg) tok/s"]
+		| @tsv' "${files[-1]}"
+}
+
+phase_status()
+{
+	{
+		status_units
+		status_health
+		status_models
+		status_bench
+	} | table 8 22
 }
 
 main()
