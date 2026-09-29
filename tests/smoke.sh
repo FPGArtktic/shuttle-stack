@@ -14,6 +14,33 @@ fail()
 	exit 1
 }
 
+# Prefer an installed ruff, fall back to uvx; missing both is an error,
+# not a reason to skip the check.
+ruff()
+{
+	if type -P ruff > /dev/null; then
+		command ruff "$@"
+	elif type -P uvx > /dev/null; then
+		uvx ruff "$@"
+	else
+		fail "neither ruff nor uvx found; ruff is to the delegate\
+ what shellcheck is to the installer"
+	fi
+}
+
+# Older commits have no delegate, and there is nothing to lint there.
+check_python()
+{
+	if [[ ! -d delegate ]]; then
+		return 0
+	fi
+	ruff check delegate || fail "ruff check delegate"
+	ruff format --check delegate || fail "ruff format --check delegate"
+	printf 'smoke: ruff: ok\n'
+	tests/delegate.sh || fail "tests/delegate.sh"
+	printf 'smoke: delegate tests: ok\n'
+}
+
 check_dry_run()
 {
 	local distro=$1 out
@@ -34,6 +61,7 @@ main()
 	bash -n install.sh || fail "bash -n install.sh"
 	shellcheck install.sh tests/*.sh || fail shellcheck
 	printf 'smoke: syntax and shellcheck: ok\n'
+	check_python
 	for distro in ubuntu arch; do
 		check_dry_run "$distro"
 	done

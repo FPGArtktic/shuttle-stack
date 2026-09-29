@@ -86,10 +86,15 @@ as `Co-developed-by:` or a tool attribution, go after it.
 
 1. `bash -n install.sh`
 2. `shellcheck install.sh tests/*.sh`
-3. `./install.sh detect plan --dry-run --force-distro ubuntu`, then the
+3. `ruff check delegate` and `ruff format --check delegate`
+4. `tests/delegate.sh`, the delegate's own suite, which talks to no
+   llama-server
+5. `./install.sh detect plan --dry-run --force-distro ubuntu`, then the
    same with `--force-distro arch`
 
-It needs bash 5, shellcheck, curl and jq, and neither root nor a GPU. On
+It needs bash 5, shellcheck, curl, jq and `uv`, and neither root nor a
+GPU. Steps 3 and 4 are skipped on a commit that predates `delegate/`,
+so `git bisect` still runs on the whole history. On
 a machine with an NVIDIA GPU the plan estimates GPU layers from the model
 file sizes, which it takes from the downloaded files or, before the
 models phase, from the Hugging Face API; that case needs network access.

@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
+.venv/
+__pycache__/
+*.egg-info/
