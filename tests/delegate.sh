@@ -14,4 +14,11 @@ if ! type -P uv > /dev/null; then
 	exit 1
 fi
 
-exec uv run --quiet python -m unittest discover -s tests -t . "$@"
+# SHUTTLE_PYTHON pins the interpreter, so CI can run the same script
+# against every version the package claims to support.
+pin=()
+if [[ -n ${SHUTTLE_PYTHON:-} ]]; then
+	pin=(--python "$SHUTTLE_PYTHON")
+fi
+
+exec uv run --quiet "${pin[@]}" python -m unittest discover -s tests -t . "$@"

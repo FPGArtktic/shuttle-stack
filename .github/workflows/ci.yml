@@ -3,7 +3,8 @@
 # The checks a contributor runs locally, repeated on GitHub's Ubuntu 24.04
 # runner.  The runner has no NVIDIA GPU and no user systemd session, so
 # only the read-only phases run here; the phases that change the system
-# are exercised on real hardware (see README, Verification).
+# are exercised on real hardware (see README, Verification).  The
+# delegate job repeats its tests on every Python the package supports.
 
 name: ci
 
@@ -32,6 +33,27 @@ jobs:
           podman --version || echo "podman: not installed"
       - name: tests/smoke.sh
         run: tests/smoke.sh
+
+  delegate:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        run: |
+          command -v uvx || curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: ruff
+        run: |
+          uvx ruff check delegate
+          uvx ruff format --check delegate
+      - name: tests/delegate.sh on Python ${{ matrix.python }}
+        env:
+          SHUTTLE_PYTHON: ${{ matrix.python }}
+        run: tests/delegate.sh -v
 
   commits:
     if: github.event_name == 'pull_request'
