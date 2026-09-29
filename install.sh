@@ -11,6 +11,7 @@ readonly PODMAN_MIN=409			# 4.9 as encoded by version_code()
 readonly IMAGE_CUDA=ghcr.io/ggml-org/llama.cpp:server-cuda
 readonly IMAGE_CPU=ghcr.io/ggml-org/llama.cpp:server
 readonly IMAGE_CURL=docker.io/curlimages/curl
+readonly CDI_SPEC=/etc/cdi/nvidia.yaml
 readonly HF_URL=https://huggingface.co
 readonly NETWORK=shuttle
 readonly SUBNET=10.89.7.0/24
@@ -547,6 +548,14 @@ fact_gpu()
 	fact driver "$gpu_driver" ok
 }
 
+# Every library path in the specification carries the driver version, so
+# an upgraded driver leaves it naming files that are no longer there.
+cdi_current()
+{
+	[[ -n $gpu_driver && -f $CDI_SPEC ]] &&
+		grep -qF "$gpu_driver" "$CDI_SPEC"
+}
+
 fact_cdi()
 {
 	if (( ! gpu_used )); then
@@ -557,10 +566,12 @@ fact_cdi()
 	else
 		fact nvidia-ctk missing "fixed by host"
 	fi
-	if [[ -f /etc/cdi/nvidia.yaml ]]; then
-		fact cdi /etc/cdi/nvidia.yaml ok
-	else
+	if [[ ! -f $CDI_SPEC ]]; then
 		fact cdi missing "fixed by gpu"
+	elif cdi_current; then
+		fact cdi "$CDI_SPEC" ok
+	else
+		fact cdi "$CDI_SPEC" "stale: driver is $gpu_driver; fixed by gpu"
 	fi
 }
 
@@ -963,7 +974,11 @@ phase_gpu()
 		info "skipped: no GPU in use"
 		return 0
 	fi
-	root nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+	if cdi_current; then
+		info "cdi: $CDI_SPEC matches driver $gpu_driver"
+	else
+		root nvidia-ctk cdi generate --output="$CDI_SPEC"
+	fi
 	run podman run --rm --device nvidia.com/gpu=all \
 		--entrypoint nvidia-smi "$IMAGE_CUDA"
 }
