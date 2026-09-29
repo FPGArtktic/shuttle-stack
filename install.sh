@@ -39,11 +39,13 @@ declare -rA SERVER_EXEC=(
 declare -rA DISTRO=(
 	[arch.refresh]=""
 	[arch.install]="pacman -S --needed --noconfirm"
+	[arch.query]=pacman_installed
 	[arch.packages]="podman passt jq curl"
 	[arch.gpu_packages]="nvidia-container-toolkit"
 	[arch.gpu_repo]=""
 	[ubuntu.refresh]="apt-get update"
 	[ubuntu.install]="apt-get install -y"
+	[ubuntu.query]=dpkg_installed
 	[ubuntu.packages]="podman passt uidmap jq curl"
 	[ubuntu.gpu_packages]="nvidia-container-toolkit"
 	[ubuntu.gpu_repo]=nvidia_apt_repo
@@ -863,25 +865,56 @@ nvidia_apt_repo()
 	root install -m 0644 "$tmp_dir/nvidia.list" "$list"
 }
 
+pacman_installed()
+{
+	pacman -Qq "$1" > /dev/null 2>&1
+}
+
+# dpkg still knows a package that was removed but kept its configuration
+# files, so the status is compared instead of the exit code.
+dpkg_installed()
+{
+	local status
+
+	status=$(dpkg-query -W -f='${Status}' "$1" 2>/dev/null) || return 1
+	[[ $status == "install ok installed" ]]
+}
+
+missing_packages()
+{
+	local query=${DISTRO[$distro.query]} p
+
+	for p in "$@"; do
+		if ! "$query" "$p"; then
+			printf '%s\n' "$p"
+		fi
+	done
+}
+
 host_packages()
 {
-	local -a refresh install packages gpu
+	local -a refresh install packages gpu missing
 	local repo=${DISTRO[$distro.gpu_repo]}
 
-	read -ra refresh <<< "${DISTRO[$distro.refresh]}"
-	read -ra install <<< "${DISTRO[$distro.install]}"
 	read -ra packages <<< "${DISTRO[$distro.packages]}"
 	if (( gpu_used )); then
 		read -ra gpu <<< "${DISTRO[$distro.gpu_packages]}"
 		packages+=("${gpu[@]}")
-		if [[ -n $repo ]]; then
-			"$repo"
-		fi
 	fi
+	mapfile -t missing < <(missing_packages "${packages[@]}")
+	if (( ${#missing[@]} == 0 )); then
+		info "packages: ${#packages[@]} present"
+		return 0
+	fi
+	if (( gpu_used )) && [[ -n $repo ]]; then
+		"$repo"
+	fi
+	read -ra refresh <<< "${DISTRO[$distro.refresh]}"
+	read -ra install <<< "${DISTRO[$distro.install]}"
 	if (( ${#refresh[@]} )); then
 		root "${refresh[@]}"
 	fi
-	root "${install[@]}" "${packages[@]}"
+	root "${install[@]}" "${missing[@]}"
 }
 
 # The fixed range must not overlap another user's, or two users would
