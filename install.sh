@@ -445,6 +445,25 @@ gpu_query()
 		--format=csv,noheader,nounits 2>/dev/null | sed -n 1p
 }
 
+# A running server holds VRAM, and counting it as taken would lower the
+# estimate on every rerun, so what the servers use is measured here and
+# left out of the figure the plan works from.
+own_vram_mib()
+{
+	local role pid apps used total=0
+
+	apps=$(nvidia-smi --query-compute-apps=pid,used_memory \
+		--format=csv,noheader,nounits 2>/dev/null) || true
+	for role in long fast; do
+		pid=$(podman inspect --format '{{.State.Pid}}' \
+			"shuttle-$role" 2>/dev/null) || continue
+		used=$(awk -F', ' -v p="$pid" '$1 == p { s += $2 }
+			END { print s + 0 }' <<< "$apps")
+		total=$(( total + used ))
+	done
+	printf '%d\n' "$total"
+}
+
 fact()
 {
 	facts+=("$1"$'\t'"$2"$'\t'"$3")
@@ -536,12 +555,14 @@ fact_linger()
 
 fact_gpu()
 {
-	local line="" verdict=ok
+	local line="" verdict=ok own=0
 
 	if command -v nvidia-smi >/dev/null && line=$(gpu_query) &&
 	   [[ -n $line ]]; then
 		IFS=', ' read -r vram_total vram_used gpu_driver <<< "$line"
 		gpu_found=1
+		own=$(own_vram_mib)
+		vram_used=$(( vram_used > own ? vram_used - own : 0 ))
 	fi
 	gpu_used=$(( gpu_found && use_gpu ))
 	if (( ! gpu_found )); then
@@ -551,8 +572,12 @@ fact_gpu()
 	if (( ! use_gpu )); then
 		verdict="unused: --no-gpu"
 	fi
-	fact gpu "$vram_total MiB, $vram_used MiB used" "$verdict"
+	fact gpu "$vram_total MiB, $vram_used MiB used elsewhere" "$verdict"
 	fact driver "$gpu_driver" ok
+	if (( own )); then
+		fact "own vram" "$own MiB in running shuttle servers" \
+			"not counted as taken"
+	fi
 }
 
 # Every library path in the specification carries the driver version, so
