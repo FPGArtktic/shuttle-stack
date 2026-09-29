@@ -219,6 +219,35 @@ the same budget as the answer. The delegate turns it off. Left on, a request
 with 200 tokens to spend returns an empty string and a finish reason of
 `length`.
 
+### Why the text comes before the question
+
+Every prompt the delegate builds puts the text first and the instruction
+last. That ordering decides two things.
+
+llama-server keeps the KV cache of a prompt prefix it has already processed,
+so a second question about the same text skips re-reading it. Over 12 KB of
+`install.sh`, two questions took 12.3 s and 13.6 s with the question first,
+and 12.1 s and 7.1 s with the text first.
+
+It also decides whether the answer is right at all. Asked about one function
+in the 35 KB installer, with the question ahead of the text, the model
+answered wrongly and supported it with a quotation that appears nowhere in
+the file; narrowing to fragments made it refuse instead. With the text first
+and the question after it, every one of those cases answers correctly:
+
+| What the model was given | Tokens | Time | Result |
+|---|---|---|---|
+| the whole file, no pattern | 13079 | 22 s | correct |
+| `pattern`, six lines of context | 563 | 4 s | correct |
+| `pattern`, twenty-five lines | 1634 | 6 s | correct |
+| `pattern`, forty lines | 2312 | 4 s | correct |
+| the one matching function | 408 | 3 s | correct |
+
+So `pattern` is about price rather than about capability: thirty-two times
+fewer tokens and seven times faster for the same answer. Use it whenever you
+can name what you are looking for, and ask several questions of one region
+rather than one question of a whole file.
+
 ## Configuration
 
 Every flag is shown by `./install.sh --help`.

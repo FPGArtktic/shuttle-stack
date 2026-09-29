@@ -28,57 +28,67 @@ MAX_ROUNDS = 4
 LABEL_TOKENS = 64
 MISSING = "NOT IN THIS TEXT"
 
+# llama-server reuses the KV cache of a prompt prefix it has already
+# seen, so every template puts the text first and the instruction last.
+# A second question about the same text then skips re-reading it:
+# measured over 12 KB of the installer, 13.6 s against 7.1 s.
 SUMMARY_MAP = """\
-Summarise the passage below in at most {words} words.{focus}
-Write plain prose. Add nothing the passage does not say.
-
 PASSAGE:
-{text}"""
+{text}
+
+---
+Summarise the passage above in at most {words} words.{focus}
+Write plain prose. Add nothing the passage does not say."""
 
 SUMMARY_REDUCE = """\
-Below are summaries of consecutive parts of one document. Write one
-summary of the whole document in at most {words} words.{focus}
-Do not mention that it arrived in parts.
-
 PARTS:
-{text}"""
+{text}
+
+---
+Above are summaries of consecutive parts of one document. Write one
+summary of the whole document in at most {words} words.{focus}
+Do not mention that it arrived in parts."""
 
 ASK_ONE = """\
-Answer the question using only the text below.{words}
+TEXT:
+{text}
+
+---
+Answer the question below using only the text above.{words}
 Quote the words from the text that support the answer.
 
 If the text does not contain the answer, reply with exactly this and
 nothing else: NOT IN THIS TEXT
 Do not answer from anything you know outside the text.
 
-QUESTION: {question}
-
-TEXT:
-{text}"""
+QUESTION: {question}"""
 
 ASK_JOIN = """\
-Below are answers to one question, each taken from a different part of
+ANSWERS:
+{text}
+
+---
+Above are answers to one question, each taken from a different part of
 one document. Write a single answer from them.{words}
 Do not mention that they arrived in parts.
 
-QUESTION: {question}
-
-ANSWERS:
-{text}"""
+QUESTION: {question}"""
 
 CLASSIFY = """\
-Assign exactly one of these labels to the text below: {labels}.{question}
-Answer with the label only.
-
 TEXT:
-{text}"""
+{text}
+
+---
+Assign exactly one of these labels to the text above: {labels}.{question}
+Answer with the label only."""
 
 EXTRACT = """\
-Extract the requested fields from the text below.{instructions}
-Use only what the text says. Omit a field the text does not support.
-
 TEXT:
-{text}"""
+{text}
+
+---
+Extract the requested fields from the text above.{instructions}
+Use only what the text says. Omit a field the text does not support."""
 
 
 class TaskError(RuntimeError):

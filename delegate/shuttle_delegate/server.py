@@ -40,6 +40,13 @@ the tokens these tools exist to save.
 shuttle-long holds the larger model and answers better; shuttle-fast
 holds a smaller one and answers sooner. Every answer reports the tokens
 the local servers spent, which are the tokens you did not.
+
+Give shuttle_ask a `pattern` whenever you can name what you are looking
+for. It does not change what the model can answer, but it changes the
+price: the same question over one matching function instead of a whole
+35 KB file costs 408 tokens rather than 13079, and three seconds rather
+than twenty-two. Repeated questions about the same text are cheaper
+again, because the server keeps the cache of a prefix it has seen.
 """
 
 mcp = MCPServer(name="shuttle", instructions=INSTRUCTIONS)
@@ -125,12 +132,14 @@ def shuttle_summarise(
 @mcp.tool(
     description="Answer a question about a file on this machine. Give "
     "the path, not the contents. Pass a regexp as `pattern` whenever "
-    "you can name what you are looking for: the file is narrowed to "
-    "the matching lines and their neighbours before the model reads "
-    "it, which is faster, far cheaper and markedly more accurate than "
-    "letting the model hunt through a whole file. Without a pattern "
-    "the file is read in parts and the parts that answer are combined. "
-    "If nothing answers, the reply says so rather than inventing one."
+    "you can name what you are looking for, and widen `context` until "
+    "the region covers a whole function or section: the same question "
+    "over one matching function rather than a whole 35 KB file costs "
+    "408 tokens instead of 13079 and answers in three seconds instead "
+    "of twenty-two. Asking several questions about the same region is "
+    "cheaper still. Without a pattern the whole file is read in parts "
+    "and the parts that answer are combined. If nothing in the file "
+    "answers, the reply says so rather than inventing one."
 )
 @anticipated
 def shuttle_ask(
