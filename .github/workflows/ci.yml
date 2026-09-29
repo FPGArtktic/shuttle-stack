@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# The checks a contributor runs locally, repeated on GitHub's Ubuntu 24.04
+# runner.  The runner has no NVIDIA GPU and no user systemd session, so
+# only the read-only phases run here; the phases that change the system
+# are exercised on real hardware (see README, Verification).
+
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install shellcheck
+        run: command -v shellcheck || sudo apt-get install -y shellcheck
+      - name: Tool versions
+        run: |
+          bash --version | head -n 1
+          shellcheck --version | sed -n 2p
+          podman --version || echo "podman: not installed"
+      - name: tests/smoke.sh
+        run: tests/smoke.sh
+
+  commits:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Install shellcheck
+        run: command -v shellcheck || sudo apt-get install -y shellcheck
+      - name: Commit messages and bisectability
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: tests/commits.sh "$BASE..$HEAD"

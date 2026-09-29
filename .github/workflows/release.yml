@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# A release is a tag v* on a commit that passes the smoke test.  It
+# carries install.sh and its sha256, so a machine can install a fixed,
+# verifiable version instead of whatever the branch holds today.
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install shellcheck
+        run: command -v shellcheck || sudo apt-get install -y shellcheck
+      - name: tests/smoke.sh
+        run: tests/smoke.sh
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          sha256sum install.sh > SHA256SUMS
+          gh release create "$TAG" install.sh SHA256SUMS \
+            --verify-tag --generate-notes

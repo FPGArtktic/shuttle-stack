@@ -92,3 +92,12 @@ scratch worktree:
 ```
 tests/commits.sh origin/main..HEAD
 ```
+
+CI (`.github/workflows/ci.yml`) runs `tests/smoke.sh` on every push and
+pull request, and `tests/commits.sh` on pull requests. GitHub's runner
+has no GPU and no user systemd session, so the phases that change the
+system (`host` to `bench`) are tested on real hardware; report the
+machine and the `bench` output in the pull request when you change them.
+
+A tag `v*` publishes a release with `install.sh` and `SHA256SUMS`
+(`.github/workflows/release.yml`).
