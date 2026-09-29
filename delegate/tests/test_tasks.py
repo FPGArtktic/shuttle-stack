@@ -11,6 +11,7 @@ from pathlib import Path
 from shuttle_delegate.backend import Completion
 from shuttle_delegate.tasks import (
     TaskError,
+    ask,
     classify,
     extract,
     read_text,
@@ -164,3 +165,50 @@ class ExtractTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AskTest(unittest.TestCase):
+    QUESTION = "what does the phase do?"
+
+    def test_a_short_file_is_asked_once(self) -> None:
+        backend = FakeBackend(answers="it installs packages")
+        result = ask(backend, "a short document.", self.QUESTION)
+        self.assertTrue(result["found"])
+        self.assertEqual(result["answer"], "it installs packages")
+        self.assertEqual(result["parts"], 1)
+        self.assertEqual(result["parts_answering"], 1)
+
+    def test_a_file_with_no_answer_says_so_instead_of_inventing(
+        self,
+    ) -> None:
+        backend = FakeBackend(answers="NOT IN THIS TEXT")
+        result = ask(backend, "a short document.", self.QUESTION)
+        self.assertFalse(result["found"])
+        self.assertEqual(result["answer"], "")
+        self.assertEqual(result["parts_answering"], 0)
+        self.assertIn("no part", result["note"])
+
+    def test_only_the_parts_that_answer_are_combined(self) -> None:
+        def answer(n: int, prompt: str) -> str:
+            if "ANSWERS:" in prompt:
+                return "combined"
+            return "found it" if n % 2 else "NOT IN THIS TEXT"
+
+        backend = FakeBackend(n_ctx=1200, answers=answer)
+        result = ask(backend, "paragraph.\n\n" * 400, self.QUESTION, words=20)
+        self.assertTrue(result["found"])
+        self.assertLess(result["parts_answering"], result["parts"])
+
+    def test_the_question_reaches_the_server(self) -> None:
+        backend = FakeBackend(answers="yes")
+        ask(backend, "a short document.", self.QUESTION)
+        self.assertIn(self.QUESTION, backend.prompts[0])
+
+    def test_an_empty_question_is_refused(self) -> None:
+        with self.assertRaises(TaskError):
+            ask(FakeBackend(), "text", "   ")
+
+    def test_a_context_with_no_room_for_the_answer_says_so(self) -> None:
+        with self.assertRaises(TaskError) as caught:
+            ask(FakeBackend(n_ctx=1200), "text", self.QUESTION)
+        self.assertIn("no room", str(caught.exception))

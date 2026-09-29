@@ -3,11 +3,30 @@
 
 from __future__ import annotations
 
+import functools
+from collections.abc import Callable
+from typing import Any
+
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from . import tasks
 from .backend import Backend, BackendError
 from .config import ROLES, ConfigError, load_endpoints
+from .retrieval import PatternError
+from .tasks import TaskError
+
+# Failures the caller can do something about: a path that is not there,
+# a pattern that matches nothing, a server that is down.  They reach the
+# model as a message rather than as a crash it cannot read.
+EXPECTED = (
+    TaskError,
+    BackendError,
+    ConfigError,
+    PatternError,
+    ValueError,
+    OSError,
+)
 
 INSTRUCTIONS = """\
 SHUTTLE hands bulk text work to two llama-servers on this machine, so
@@ -34,6 +53,17 @@ def backends() -> dict[str, Backend]:
         for role, endpoint in load_endpoints().items():
             _backends[role] = Backend(endpoint)
     return _backends
+
+
+def anticipated(fn: Callable[..., Any]) -> Callable[..., Any]:
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return fn(*args, **kwargs)
+        except EXPECTED as error:
+            raise ToolError(str(error)) from error
+
+    return wrapper
 
 
 def backend(role: str) -> Backend:
@@ -64,6 +94,7 @@ def _describe(server: Backend) -> dict:
     "holds and how large its context is. Call this when another tool "
     "fails, or to choose between the two servers."
 )
+@anticipated
 def shuttle_status() -> dict:
     try:
         return {"servers": [_describe(b) for b in backends().values()]}
@@ -79,6 +110,7 @@ def shuttle_status() -> dict:
     "folded together. Use shuttle-long unless speed matters more than "
     "quality."
 )
+@anticipated
 def shuttle_summarise(
     path: str,
     words: int = 200,
@@ -91,12 +123,42 @@ def shuttle_summarise(
 
 
 @mcp.tool(
+    description="Answer a question about a file on this machine. Give "
+    "the path, not the contents. Pass a regexp as `pattern` whenever "
+    "you can name what you are looking for: the file is narrowed to "
+    "the matching lines and their neighbours before the model reads "
+    "it, which is faster, far cheaper and markedly more accurate than "
+    "letting the model hunt through a whole file. Without a pattern "
+    "the file is read in parts and the parts that answer are combined. "
+    "If nothing answers, the reply says so rather than inventing one."
+)
+@anticipated
+def shuttle_ask(
+    path: str,
+    question: str,
+    pattern: str = "",
+    context: int = 12,
+    words: int = 200,
+    server: str = "long",
+) -> dict:
+    return tasks.ask(
+        backend(server),
+        tasks.read_text(path),
+        question,
+        words,
+        pattern,
+        context,
+    )
+
+
+@mcp.tool(
     description="Put a file into one of the labels you give. The label "
     "is constrained by a schema, so the answer is always one of them. "
     "A file longer than the context is classified in parts and the "
     "parts vote; the answer carries the agreement between them. "
     "shuttle-fast is usually enough for this."
 )
+@anticipated
 def shuttle_classify(
     path: str,
     labels: list[str],
@@ -115,6 +177,7 @@ def shuttle_classify(
     "piece: fields cannot be merged across parts without inventing "
     "precedence, and a file too large is refused rather than guessed at."
 )
+@anticipated
 def shuttle_extract(
     path: str,
     schema: dict,

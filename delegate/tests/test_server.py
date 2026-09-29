@@ -11,6 +11,7 @@ from shuttle_delegate.server import backend, mcp
 EXPECTED = {
     "shuttle_status",
     "shuttle_summarise",
+    "shuttle_ask",
     "shuttle_classify",
     "shuttle_extract",
 }
@@ -36,3 +37,25 @@ class SurfaceTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ToolErrorTest(unittest.TestCase):
+    """A failure the caller can act on must reach it as a message."""
+
+    def test_a_missing_file_is_an_anticipated_failure(self) -> None:
+        from mcp.server.mcpserver.exceptions import ToolError
+
+        with self.assertRaises(ToolError) as caught:
+            asyncio.run(
+                mcp.call_tool(
+                    "shuttle_ask",
+                    {"path": "/nonexistent/file.txt", "question": "what?"},
+                )
+            )
+        self.assertIn("nonexistent", str(caught.exception))
+
+    def test_ask_offers_a_pattern_and_a_context(self) -> None:
+        tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
+        fields = tools["shuttle_ask"].input_schema["properties"]
+        self.assertIn("pattern", fields)
+        self.assertIn("context", fields)

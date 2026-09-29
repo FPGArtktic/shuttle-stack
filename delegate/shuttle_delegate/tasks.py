@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .backend import Backend, Completion
 from .chunking import chunk
+from .retrieval import CONTEXT_LINES, narrow
 
 # Qwen3 averages above this on prose and near it on dense code, so the
 # estimate errs towards chunks that are smaller than they need to be.
@@ -25,6 +26,7 @@ MIN_BUDGET_TOKENS = 256
 FIT_ATTEMPTS = 3
 MAX_ROUNDS = 4
 LABEL_TOKENS = 64
+MISSING = "NOT IN THIS TEXT"
 
 SUMMARY_MAP = """\
 Summarise the passage below in at most {words} words.{focus}
@@ -39,6 +41,29 @@ summary of the whole document in at most {words} words.{focus}
 Do not mention that it arrived in parts.
 
 PARTS:
+{text}"""
+
+ASK_ONE = """\
+Answer the question using only the text below.{words}
+Quote the words from the text that support the answer.
+
+If the text does not contain the answer, reply with exactly this and
+nothing else: NOT IN THIS TEXT
+Do not answer from anything you know outside the text.
+
+QUESTION: {question}
+
+TEXT:
+{text}"""
+
+ASK_JOIN = """\
+Below are answers to one question, each taken from a different part of
+one document. Write a single answer from them.{words}
+Do not mention that they arrived in parts.
+
+QUESTION: {question}
+
+ANSWERS:
 {text}"""
 
 CLASSIFY = """\
@@ -176,6 +201,120 @@ def summarise(
         "rounds": rounds,
         "server": f"shuttle-{backend.role}",
     } | work.report()
+
+
+def _answered(text: str) -> bool:
+    """Whether a part claims to hold the answer.
+
+    The sentinel is asked for verbatim, and any appearance of it is
+    read as a refusal: a part that mentions it while also answering is
+    a part whose answer cannot be trusted either way.
+    """
+    return MISSING not in text.upper()
+
+
+def _join(
+    backend: Backend,
+    work: Work,
+    answers: list[str],
+    question: str,
+    words: str,
+    n_predict: int,
+) -> str:
+    """Fold several part-answers into one, in bounded rounds."""
+    pieces = answers
+    rounds = 0
+    while len(pieces) > 1:
+        cut = fit(backend, "\n\n".join(pieces), n_predict)
+        folded = [
+            work.record(
+                backend.chat(
+                    ASK_JOIN.format(
+                        question=question, words=words, text=piece
+                    ),
+                    n_predict,
+                )
+            )
+            for piece in cut
+        ]
+        rounds += 1
+        if len(folded) >= len(pieces) or rounds > MAX_ROUNDS:
+            raise TaskError(
+                "the part answers are not combining into one; ask a "
+                "narrower question or a shorter answer"
+            )
+        pieces = folded
+    return pieces[0]
+
+
+def ask(
+    backend: Backend,
+    text: str,
+    question: str,
+    words: int = 200,
+    pattern: str = "",
+    context: int = CONTEXT_LINES,
+) -> dict:
+    """Answer a question from a file, part by part if it is long.
+
+    A pattern narrows the file first. Locating a passage is exact work
+    at which a model is poor: asked over a whole 35 KB script the
+    answer came back wrong with an invented quote, and asked over the
+    one matching function it came back right, for a thirtieth of the
+    tokens and in a fifteenth of the time.
+    """
+    if not question.strip():
+        raise TaskError("ask needs a question")
+    if words < 10:
+        raise TaskError(f"words must be at least 10, got {words}")
+    matched = 0
+    if pattern:
+        text, matched = narrow(text, pattern, context)
+        if not matched:
+            raise TaskError(
+                f"nothing in the file matches {pattern!r}; widen the "
+                "pattern, or leave it out to read the whole file"
+            )
+    n_predict = max(96, words * 3)
+    limit = f" Answer in at most {words} words."
+    work = Work()
+    chunks = fit(backend, text, n_predict)
+    if not chunks:
+        raise TaskError("nothing to read")
+    answers = [
+        answer
+        for answer in (
+            work.record(
+                backend.chat(
+                    ASK_ONE.format(question=question, words=limit, text=piece),
+                    n_predict,
+                )
+            )
+            for piece in chunks
+        )
+        if _answered(answer)
+    ]
+    report = {
+        "parts": len(chunks),
+        "parts_answering": len(answers),
+        "server": f"shuttle-{backend.role}",
+    } | work.report()
+    if pattern:
+        report["matched_regions"] = matched
+    if not answers:
+        return {
+            "answer": "",
+            "found": False,
+            "note": "no part of the file answers this question",
+        } | report
+    answer = _join(backend, work, answers, question, limit, n_predict)
+    result = {"answer": answer, "found": True} | (report | work.report())
+    if len(answers) > 1:
+        # A part that holds nothing may answer anyway rather than use
+        # the sentinel, and the fold then blends it with a real answer.
+        # The parts are returned so the caller can see that happen.
+        result["said_by_part"] = answers
+    return result
 
 
 def _decode(content: str, what: str) -> dict:
