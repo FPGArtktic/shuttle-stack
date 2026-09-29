@@ -157,6 +157,24 @@ def fit(backend: Backend, text: str, n_predict: int) -> list[str]:
     )
 
 
+def narrowed(text: str, pattern: str, context: int) -> tuple[str, int]:
+    """The regions of the text matching the pattern, or the text.
+
+    An empty pattern means the whole text. A pattern matching nothing
+    is an error rather than an empty read: a caller that mistyped a
+    pattern should hear so, not receive an answer drawn from nowhere.
+    """
+    if not pattern:
+        return text, 0
+    found, matched = narrow(text, pattern, context)
+    if not matched:
+        raise TaskError(
+            f"nothing in the file matches {pattern!r}; widen the "
+            "pattern, or leave it out to read the whole file"
+        )
+    return found, matched
+
+
 def _clause(prefix: str, value: str) -> str:
     return f" {prefix} {value.strip()}" if value.strip() else ""
 
@@ -277,14 +295,7 @@ def ask(
         raise TaskError("ask needs a question")
     if words < 10:
         raise TaskError(f"words must be at least 10, got {words}")
-    matched = 0
-    if pattern:
-        text, matched = narrow(text, pattern, context)
-        if not matched:
-            raise TaskError(
-                f"nothing in the file matches {pattern!r}; widen the "
-                "pattern, or leave it out to read the whole file"
-            )
+    text, matched = narrowed(text, pattern, context)
     n_predict = max(96, words * 3)
     limit = f" Answer in at most {words} words."
     work = Work()
@@ -379,11 +390,22 @@ def classify(
 
 
 def extract(
-    backend: Backend, text: str, schema: dict, instructions: str = ""
+    backend: Backend,
+    text: str,
+    schema: dict,
+    instructions: str = "",
+    pattern: str = "",
+    context: int = CONTEXT_LINES,
 ) -> dict:
-    """Pull structured fields out of a text that fits in one go."""
+    """Pull structured fields out of a text that fits in one go.
+
+    A pattern narrows the file first, which is what makes this usable
+    on a file larger than the context: the fields are read from the
+    matching regions rather than from a refusal.
+    """
     if schema.get("type") != "object":
         raise TaskError("schema must be a JSON schema of type 'object'")
+    text, matched = narrowed(text, pattern, context)
     n_predict = max(256, backend.context_size() // 8)
     chunks = fit(backend, text, n_predict)
     if not chunks:
@@ -406,7 +428,10 @@ def extract(
             schema=schema,
         )
     )
-    return {
+    result = {
         "fields": _decode(answer, "the fields"),
         "server": f"shuttle-{backend.role}",
     } | work.report()
+    if pattern:
+        result["matched_regions"] = matched
+    return result

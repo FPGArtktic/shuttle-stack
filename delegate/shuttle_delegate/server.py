@@ -182,17 +182,26 @@ def shuttle_classify(
 @mcp.tool(
     description="Pull structured fields out of a file, following a JSON "
     "schema you supply; the server is held to the schema, so the shape "
-    "of the answer is guaranteed. The file must fit the context in one "
-    "piece: fields cannot be merged across parts without inventing "
-    "precedence, and a file too large is refused rather than guessed at."
+    "of the answer is guaranteed. Pass a `pattern` to read the fields "
+    "from one region of a large file; without one the file must fit "
+    "the context in a single piece, because fields cannot be merged "
+    "across parts without inventing a precedence, and a file too "
+    "large is refused rather than guessed at."
 )
 @anticipated
 def shuttle_extract(
     path: str,
     schema: dict,
     instructions: str = "",
+    pattern: str = "",
+    context: int = 12,
     server: str = "long",
 ) -> dict:
     return tasks.extract(
-        backend(server), tasks.read_text(path), schema, instructions
+        backend(server),
+        tasks.read_text(path),
+        schema,
+        instructions,
+        pattern,
+        context,
     )
