@@ -9,8 +9,8 @@
 
 set -Eeuo pipefail
 
-readonly SUBSYSTEMS=(install plan quadlet models verify bench readme tests
-	build)
+readonly SUBSYSTEMS=(install plan quadlet models verify bench delegate
+	readme tests build)
 
 errors=0
 scratch=""

@@ -35,13 +35,26 @@ Read them once; this file only lists what is specific to this repository.
   An exception needs `# shellcheck disable=SCxxxx` with its reason on the
   same line.
 
+## Python
+
+The delegate is the only Python in the tree; the installer stays free of
+it. The same rules apply as above, with the language's own conventions:
+
+- `ruff check` and `ruff format --check` report nothing. Together they
+  are to Python what `shellcheck` is to bash.
+- Lines are at most 79 columns. Public functions carry type hints.
+- Errors raise; nothing is swallowed. A tool that cannot do its work
+  says why, in a message a model can act on.
+- The standard library first. A dependency needs a reason in the commit
+  that adds it.
+
 ## Commits
 
 - One logical change per commit. Every commit passes `tests/smoke.sh`, so
   `git bisect` never stops on a broken tree.
 - Subject: `subsystem: imperative description`, at most 72 characters, no
   trailing period. Subsystems: `install`, `plan`, `quadlet`, `models`,
-  `verify`, `bench`, `readme`, `tests`, `build`.
+  `verify`, `bench`, `delegate`, `readme`, `tests`, `build`.
 - Body wrapped at 72 columns. It describes the problem and why it is
   solved this way; it does not repeat the diff. No "This patch...", no
   first person.
