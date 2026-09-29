@@ -18,8 +18,11 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
-      - name: Install shellcheck
-        run: command -v shellcheck || sudo apt-get install -y shellcheck
+      - name: Install shellcheck and uv
+        run: |
+          command -v shellcheck || sudo apt-get install -y shellcheck
+          command -v uvx || curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: tests/smoke.sh
         run: tests/smoke.sh
       - name: Publish the release
