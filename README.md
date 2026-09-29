@@ -219,6 +219,41 @@ the same budget as the answer. The delegate turns it off. Left on, a request
 with 200 tokens to spend returns an empty string and a finish reason of
 `length`.
 
+### Using it well
+
+Delegate volume, not judgement. The local models are good when the material
+comes from you and the shape of the answer is fixed by you; they are poor at
+deciding what matters. Keep the choosing, hand over the reading.
+
+- **Give a path, never contents.** Reading a file yourself and pasting it into
+  a tool call spends exactly the tokens the tool exists to save.
+- **Pass a `pattern` whenever you can name what you are after**, and widen
+  `context` until the region covers a whole function or section. The same
+  answer costs 408 tokens instead of 13079.
+- **Ask several questions of one region rather than one question of a file.**
+  The server keeps the cache of a prefix it has already read, so the second
+  question about the same text is about twice as fast.
+- **Prefer `shuttle_extract` and `shuttle_classify` when you know the shape of
+  the answer.** The server is held to your schema, so the reply cannot be a
+  label you did not offer or a field you did not ask for. `shuttle_ask` is
+  free-form and carries no such guarantee.
+- **Do not ask about anything the file does not contain.** Asked what Quadlet
+  is, with no text to read, `shuttle-fast` answered that it is a character
+  from an anime series by the author of *Sword Art Online*. Given a file, the
+  same server answers from the file or says the file does not say.
+- **Do not delegate a small file.** A call costs three to twenty seconds
+  against a fraction of one for reading it directly. Delegation pays from the
+  point where the file would otherwise fill thousands of tokens of context.
+- **`shuttle-long` for quality, `shuttle-fast` for throughput.** Classifying
+  suits the fast server; extraction and questions suit the long one.
+- **Read `local_tokens` in every reply.** It is the work the machine did, and
+  therefore the work your context did not have to hold.
+
+A worked pair, both measured on this machine: `install.sh` at 35 KB summarised
+for 13260 local tokens, and `CONTRIBUTING.md` yielding its subject-length
+limit, linter and indent style for 1410. Neither file entered the caller's
+context.
+
 ### Why the text comes before the question
 
 Every prompt the delegate builds puts the text first and the instruction
