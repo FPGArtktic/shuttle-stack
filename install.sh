@@ -24,7 +24,8 @@ readonly DRAFT_OVERHEAD_MB=256
 # q8_0 KV of Qwen3-8B: 8 KV heads * 128 dims * (K + V) * 1 byte.
 readonly KV_BYTES_PER_TOKEN_LAYER=2048
 readonly HEALTH_TIMEOUT=900
-readonly PHASES=(detect plan host gpu quadlets models verify)
+readonly BENCH_PREDICT=64
+readonly PHASES=(detect plan host gpu quadlets models verify bench)
 readonly EXEC_COMMON="--slot-save-path /cache --flash-attn on --no-webui"
 
 declare -rA SERVER_IP=([long]=10.89.7.10 [fast]=10.89.7.11)
@@ -58,6 +59,8 @@ opt_ctx=""
 opt_ngl=""
 opt_threads=""
 layers=36
+bench_tokens=(2048 8192)
+bench_custom=0
 force_distro=""
 
 declare -A model_repo=(
@@ -124,8 +127,8 @@ usage()
 	cat <<EOF
 usage: install.sh [phase...] [options]
 
-Phases always run in this order; without any, all of them run:
-  detect plan host gpu quadlets models verify
+Phases always run in this order; without any, all but bench run:
+  detect plan host gpu quadlets models verify bench
 
 Options:
   --dry-run                  show commands and file changes, change nothing
@@ -142,6 +145,7 @@ Options:
   --fast-model REPO FILE     Hugging Face GGUF for shuttle-fast
   --draft-model REPO FILE    Hugging Face GGUF for the draft model
   --force-distro arch|ubuntu skip distribution detection (tests only)
+  --bench-tokens N           prompt size for bench; repeat for several
   --prefix DIR               models and KV cache location
                              (default: ~/.local/share/shuttle)
 
@@ -267,6 +271,9 @@ set_value()
 	--layers)
 		need_number "$1" "$2" 1
 		layers=$2 ;;
+	--bench-tokens)
+		need_number "$1" "$2" 1
+		add_bench_size "$2" ;;
 	--prefix)
 		[[ $2 == /* ]] || usage_die "--prefix needs an absolute path"
 		data_dir=$2 ;;
@@ -275,6 +282,15 @@ set_value()
 			usage_die "--force-distro takes arch or ubuntu"
 		force_distro=$2 ;;
 	esac
+}
+
+add_bench_size()
+{
+	if (( ! bench_custom )); then
+		bench_tokens=()
+		bench_custom=1
+	fi
+	bench_tokens+=("$1")
 }
 
 set_model()
@@ -295,7 +311,7 @@ parse_args()
 {
 	while (( $# )); do
 		case $1 in
-		detect|plan|host|gpu|quadlets|models|verify)
+		detect|plan|host|gpu|quadlets|models|verify|bench)
 			phases+=("$1") ;;
 		--dry-run)		dry_run=1 ;;
 		--yes)			assume_yes=1 ;;
@@ -303,7 +319,8 @@ parse_args()
 		--no-draft)		use_draft=0 ;;
 		--expose-direct)	expose_direct=1 ;;
 		--no-expose-direct)	expose_direct=0 ;;
-		--ctx|--ngl|--threads|--layers|--prefix|--force-distro)
+		--ctx|--ngl|--threads|--layers|--bench-tokens|--prefix|\
+		--force-distro)
 			(( $# >= 2 )) || usage_die "$1 needs a value"
 			set_value "$1" "$2"
 			shift ;;
@@ -1354,6 +1371,84 @@ phase_verify()
 	done
 	rows+=("$(kv_roundtrip)")
 	printf '%s\n' "${rows[@]}" | table 16 14 8 12
+}
+
+# A prompt of exactly n tokens: every number is at least one token, so
+# tokenizing 1..n gives enough, and the ids are cut to length.
+bench_prompt()
+{
+	local role=$1 n=$2 body
+
+	body=$(seq -s ' ' 1 "$n" | jq -Rs '{content: .}')
+	api "$role" /tokenize --json @- <<< "$body" |
+		jq -c --argjson n "$n" --argjson p "$BENCH_PREDICT" '
+			if (.tokens | length) < $n then error("too few tokens")
+			else {prompt: .tokens[:$n], n_predict: $p,
+			      cache_prompt: false} end'
+}
+
+bench_one()
+{
+	local role=$1 n=$2 ctx=$3 body
+
+	if [[ -n $ctx ]] && (( n + BENCH_PREDICT > ctx )); then
+		info "shuttle-$role: $n tokens skipped, slot context is $ctx"
+		return 0
+	fi
+	info "shuttle-$role: $n-token prompt"
+	body=$(bench_prompt "$role" "$n")
+	api "$role" /completion --json @- <<< "$body" |
+		jq -c --arg s "shuttle-$role" --argjson n "$n" '{server: $s,
+			tokens: $n, prompt_n: .timings.prompt_n,
+			pp: (.timings.prompt_per_second * 10 | round / 10),
+			tg: (.timings.predicted_per_second * 10 | round / 10)}'
+}
+
+env_json()
+{
+	local file=$config_dir/$1.env
+
+	if [[ ! -f $file ]]; then
+		echo '{}'
+		return 0
+	fi
+	jq -Rn '[inputs | select(startswith("LLAMA_ARG_"))
+		| capture("^(?<key>[^=]+)=(?<value>.*)$")] | from_entries' \
+		< "$file"
+}
+
+bench_report()
+{
+	local file=$state_dir/bench-$stamp.json json
+
+	json=$(printf '%s\n' "$@" | jq -s --arg date "$(date -Is)" \
+		--argjson long "$(env_json long)" \
+		--argjson fast "$(env_json fast)" \
+		'{date: $date, config: {long: $long, fast: $fast},
+		  results: .}')
+	printf '%s\n' "$json" > "$tmp_dir/bench.json"
+	run install -D -m 0644 "$tmp_dir/bench.json" "$file"
+	{
+		printf 'server\ttokens\tpp tok/s\ttg tok/s\n'
+		jq -r '.results[] | [.server, .tokens, .pp, .tg] | @tsv' \
+			<<< "$json"
+	} | table 14 8 10
+}
+
+phase_bench()
+{
+	local role n ctx results=()
+
+	require_supported
+	for role in long fast; do
+		ctx=$(api "$role" /props < /dev/null |
+			jq -r '.default_generation_settings.n_ctx // empty') ||
+			die "shuttle-$role: /props failed; run verify first"
+		for n in "${bench_tokens[@]}"; do
+			results+=("$(bench_one "$role" "$n" "$ctx")")
+		done
+	done
+	bench_report "${results[@]}"
 }
 
 main()
