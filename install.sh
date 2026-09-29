@@ -19,7 +19,7 @@ readonly VRAM_RESERVE_MB=768
 readonly DRAFT_OVERHEAD_MB=256
 # q8_0 KV of Qwen3-8B: 8 KV heads * 128 dims * (K + V) * 1 byte.
 readonly KV_BYTES_PER_TOKEN_LAYER=2048
-readonly PHASES=(detect plan host)
+readonly PHASES=(detect plan host gpu)
 
 declare -rA SERVER_PORT=([long]=8081 [fast]=8082)
 
@@ -99,7 +99,7 @@ usage()
 usage: install.sh [phase...] [options]
 
 Phases always run in this order; without any, all of them run:
-  detect plan host
+  detect plan host gpu
 
 Options:
   --dry-run                  show commands and file changes, change nothing
@@ -269,7 +269,7 @@ parse_args()
 {
 	while (( $# )); do
 		case $1 in
-		detect|plan|host)
+		detect|plan|host|gpu)
 			phases+=("$1") ;;
 		--dry-run)		dry_run=1 ;;
 		--yes)			assume_yes=1 ;;
@@ -298,7 +298,7 @@ parse_args()
 finish_options()
 {
 	if (( ${#phases[@]} == 0 )); then
-		phases=(detect plan host)
+		phases=(detect plan host gpu)
 	fi
 	models_dir=$data_dir/models
 }
@@ -861,6 +861,18 @@ phase_host()
 	host_packages
 	host_subids
 	host_linger
+}
+
+phase_gpu()
+{
+	require_supported
+	if (( ! gpu_used )); then
+		info "skipped: no GPU in use"
+		return 0
+	fi
+	root nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+	run podman run --rm --device nvidia.com/gpu=all \
+		--entrypoint nvidia-smi "$IMAGE_CUDA"
 }
 
 main()
