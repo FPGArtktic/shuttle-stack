@@ -14,12 +14,12 @@ Engines*.
 
 ## Status
 
-M0 is the inference layer. M1 is the delegate that puts it in front of an
-agent.
+M0 is the inference layer, M1 the delegate that puts it in front of an agent,
+and M2 the evaluation that says how far either can be trusted.
 
 | Component | State |
 |---|---|
-| `install.sh` phases | working — `detect plan host gpu quadlets models verify bench status`, each runnable on its own |
+| `install.sh` phases | working — `detect plan host gpu quadlets models verify bench delegate status`, each runnable on its own |
 | `shuttle-long` | working — Qwen3-8B Q4_K_M, partial GPU offload through CDI, one slot |
 | `shuttle-fast` | working — Qwen3-1.7B Q8_0, CPU only, four parallel slots |
 | Speculative decoding | working — Qwen3-0.6B draft, 2.15x on generation where it fits in VRAM |
@@ -29,8 +29,10 @@ agent.
 | Benchmarks | working — `bench` writes JSON with the configuration it measured |
 | `shuttle_status` | working — which servers answer, which model each holds, how large its context is |
 | `shuttle_summarise` | working — folds a file larger than the context into one summary |
+| `shuttle_ask` | working — answers from a file, or says the file does not answer; narrows by regexp |
 | `shuttle_classify` | working — labels enforced by a schema, votes across parts, reports agreement |
-| `shuttle_extract` | working — fields enforced by a schema; refuses a file that needs more than one part |
+| `shuttle_extract` | working — fields enforced by a schema, narrows by regexp; refuses a file that needs more than one part |
+| Evaluation set | working — twenty cases with known answers, two of them refusals; 20/20 on the long server, 18/20 on the fast one |
 | Ubuntu 24.04 | not yet on hardware — the dry runs pass in CI, the system-changing phases have only been run on Arch |
 
 Neither milestone includes any of the following, and no placeholders are left
@@ -533,12 +535,13 @@ trade is not acceptable.
 ## Roadmap
 
 - **M1 — delegate.** Done: see *Delegating* above.
-- **M2 — measured behaviour.** A fixed set of questions with known answers,
-  run against both servers, so that what the models are good at is a number
-  rather than an impression. Named sessions on top of KV slot dumps were the
-  earlier plan and were dropped: measured here, restoring a 305 MiB dump of
-  4085 tokens saved nothing at all over the prompt cache the server already
-  keeps, and cost 76 KB of disk per token to do it.
+- **M2 — measured behaviour.** Done: see *How often it is right* above.
+  Named sessions on top of KV slot dumps were the earlier plan for M2 and
+  were dropped on measurement: restoring a 305 MiB dump of 4085 tokens saved
+  nothing over the prompt cache the server already keeps, and cost 76 KB of
+  disk per token to do it. The evaluation set replaced it, and earned the
+  place twice over by finding a missing argument and overturning the advice
+  on which server to use.
 - **M3 — WEFT.** Shared conventions with
   [WEFT](https://github.com/FPGArtktic/weft-mcp) so both tools can be used by
   the same agent.
