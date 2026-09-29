@@ -21,4 +21,12 @@ if [[ -n ${SHUTTLE_PYTHON:-} ]]; then
 	pin=(--python "$SHUTTLE_PYTHON")
 fi
 
-exec uv run --quiet "${pin[@]}" python -m unittest discover -s tests -t . "$@"
+# The tests must not see this machine's installation: one that reads
+# ~/.config/shuttle/stack.env passes for a developer who has the stack
+# and fails on a runner that does not.  XDG_CONFIG_HOME points at an
+# empty directory so neither can happen.
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+
+XDG_CONFIG_HOME=$scratch \
+	uv run --quiet "${pin[@]}" python -m unittest discover -s tests -t . "$@"
