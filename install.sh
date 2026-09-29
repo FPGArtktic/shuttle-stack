@@ -24,7 +24,7 @@ readonly DRAFT_OVERHEAD_MB=256
 # q8_0 KV of Qwen3-8B: 8 KV heads * 128 dims * (K + V) * 1 byte.
 readonly KV_BYTES_PER_TOKEN_LAYER=2048
 readonly HEALTH_TIMEOUT=900
-readonly PHASES=(detect plan host gpu quadlets)
+readonly PHASES=(detect plan host gpu quadlets models)
 readonly EXEC_COMMON="--slot-save-path /cache --flash-attn on --no-webui"
 
 declare -rA SERVER_IP=([long]=10.89.7.10 [fast]=10.89.7.11)
@@ -70,6 +70,9 @@ declare -A model_file=(
 	[fast]=Qwen3-1.7B-Q8_0.gguf
 	[draft]=Qwen3-0.6B-Q8_0.gguf
 )
+declare -A model_size=()
+declare -A model_sha=()
+models=()
 
 user=${USER:-$(id -un)}
 uid=$(id -u)
@@ -121,7 +124,7 @@ usage()
 usage: install.sh [phase...] [options]
 
 Phases always run in this order; without any, all of them run:
-  detect plan host gpu quadlets
+  detect plan host gpu quadlets models
 
 Options:
   --dry-run                  show commands and file changes, change nothing
@@ -291,7 +294,7 @@ parse_args()
 {
 	while (( $# )); do
 		case $1 in
-		detect|plan|host|gpu|quadlets)
+		detect|plan|host|gpu|quadlets|models)
 			phases+=("$1") ;;
 		--dry-run)		dry_run=1 ;;
 		--yes)			assume_yes=1 ;;
@@ -320,7 +323,11 @@ parse_args()
 finish_options()
 {
 	if (( ${#phases[@]} == 0 )); then
-		phases=(detect plan host gpu quadlets)
+		phases=(detect plan host gpu quadlets models)
+	fi
+	models=(long fast)
+	if (( use_draft )); then
+		models+=(draft)
 	fi
 	models_dir=$data_dir/models
 	cache_dir=$data_dir/cache
@@ -1165,6 +1172,99 @@ phase_quadlets()
 			< <(render_container "$role")
 	done
 	apply_changes
+}
+
+model_lookup()
+{
+	local role=$1 entry
+
+	entry=$(hf_entry "${model_repo[$role]}" "${model_file[$role]}")
+	read -r "model_size[$role]" "model_sha[$role]" <<< "$entry"
+	[[ ${model_sha[$role]} =~ ^[0-9a-f]{64}$ ]] ||
+		die "${model_repo[$role]}: no sha256 for ${model_file[$role]}"
+	info "${model_file[$role]}: $(gib $(( model_size[$role] / 1024 )))" \
+		"sha256 ${model_sha[$role]:0:16}"
+}
+
+model_valid()
+{
+	local role=$1 path=$models_dir/${model_file[$1]} sum
+
+	if [[ ! -f $path ]]; then
+		return 1
+	fi
+	info "checking $path"
+	sum=$(sha256sum "$path")
+	[[ ${sum%% *} == "${model_sha[$role]}" ]]
+}
+
+part_bytes()
+{
+	local part=$models_dir/${model_file[$1]}.part
+
+	if [[ -f $part ]]; then
+		stat -c %s "$part"
+	else
+		echo 0
+	fi
+}
+
+verify_sha()
+{
+	local sum
+
+	sum=$(sha256sum "$1")
+	sum=${sum%% *}
+	if [[ $sum != "$2" ]]; then
+		rm -f "$1"
+		die "sha256 mismatch for $1 (got $sum, want $2);" \
+			"the file was removed, rerun to download it again"
+	fi
+}
+
+check_space()
+{
+	local need_kib=$(( $1 / 1024 )) free
+
+	free=$(free_kib "$models_dir")
+	(( free > need_kib + 1048576 )) ||
+		die "models need $(gib "$need_kib") and 1 GiB spare," \
+			"but $models_dir has $(gib "$free") free"
+}
+
+fetch_model()
+{
+	local role=$1 dst=$models_dir/${model_file[$1]}
+	local url=$HF_URL/${model_repo[$1]}/resolve/main/${model_file[$1]}
+
+	if (( $(part_bytes "$role") < model_size[$role] )); then
+		run curl -fL -C - --retry 5 "${hf_auth[@]}" \
+			-o "$dst.part" "$url"
+	fi
+	run verify_sha "$dst.part" "${model_sha[$role]}"
+	run mv -f "$dst.part" "$dst"
+}
+
+phase_models()
+{
+	local role part need=0 pending=()
+
+	require_supported
+	for role in "${models[@]}"; do
+		model_lookup "$role"
+		if model_valid "$role"; then
+			info "ok: ${model_file[$role]}"
+		else
+			pending+=("$role")
+			part=$(part_bytes "$role")
+			need=$(( need + model_size[$role] - part ))
+		fi
+	done
+	check_space "$need"
+	run mkdir -p "$models_dir"
+	for role in "${pending[@]}"; do
+		fetch_model "$role"
+	done
 }
 
 main()
