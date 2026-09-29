@@ -830,10 +830,15 @@ plan_draft()
 		plan_row long.draft off "--no-draft"
 		return 0
 	fi
+	server_env[long]+="LLAMA_ARG_SPEC_TYPE=draft-simple"$'\n'
 	server_env[long]+="LLAMA_ARG_SPEC_DRAFT_MODEL=$draft"$'\n'
 	server_env[long]+="LLAMA_ARG_N_GPU_LAYERS_DRAFT=$draft_ngl"$'\n'
+	server_env[long]+="LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K=q8_0"$'\n'
+	server_env[long]+="LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V=q8_0"$'\n'
 	plan_row long.draft "${model_file[draft]}" \
 		"speculative decoding, draft ngl $draft_ngl"
+	plan_row "" "" "spec type draft-simple: a draft model on its own" \
+		"leaves speculative decoding off"
 }
 
 plan_servers()
