@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 
-from .server import server
+from .server import mcp
 
 TRANSPORTS = ("stdio", "sse", "streamable-http")
 
@@ -21,7 +21,7 @@ def main() -> None:
         choices=TRANSPORTS,
         help="stdio for a client on this machine (default)",
     )
-    server.run(transport=parser.parse_args().transport)
+    mcp.run(transport=parser.parse_args().transport)
 
 
 if __name__ == "__main__":
