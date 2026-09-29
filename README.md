@@ -14,7 +14,8 @@ Engines*.
 
 ## Status
 
-This is milestone M0: the inference layer and nothing else.
+M0 is the inference layer. M1 is the delegate that puts it in front of an
+agent.
 
 | Component | State |
 |---|---|
@@ -27,12 +28,15 @@ This is milestone M0: the inference layer and nothing else.
 | KV slot save and restore | working — `/slots/{id}?action=save`, verified round trip |
 | Model download | working — size and sha256 from the Hugging Face tree API, resumable |
 | Benchmarks | working — `bench` writes JSON with the configuration it measured |
+| `shuttle_status` | working — which servers answer, which model each holds, how large its context is |
+| `shuttle_summarise` | working — folds a file larger than the context into one summary |
+| `shuttle_classify` | working — labels enforced by a schema, votes across parts, reports agreement |
+| `shuttle_extract` | working — fields enforced by a schema; refuses a file that needs more than one part |
 | Ubuntu 24.04 | not yet on hardware — the dry runs pass in CI, the system-changing phases have only been run on Arch |
 
-M0 deliberately does **not** include any of the following, and leaves no
-placeholders for them:
+Neither milestone includes any of the following, and no placeholders are left
+for them:
 
-- an MCP delegate server,
 - the DeepSeek Harness,
 - BitNet,
 - vision-language models,
@@ -62,6 +66,8 @@ argument; everything else Ollama does, it does well.
 - An NVIDIA GPU is optional. With one, `shuttle-long` offloads as many layers
   as the VRAM budget allows through CDI, which needs
   `nvidia-container-toolkit`; without one, both servers run on the CPU.
+- `uv`, for the delegate only. Nothing the stack runs needs it, and the
+  installer does not fetch it: `curl -LsSf https://astral.sh/uv/install.sh | sh`.
 - Disk: **7.0 GiB** for the three GGUF files and **5.2 GB** for the two
   container images, so about **12.5 GB** in total. The `models` phase refuses
   to start a download that would leave under 1 GiB free.
@@ -78,10 +84,21 @@ The first command brings the repository. The second reports what the installer
 found and what it intends to do, changing nothing. The third runs every phase
 except `bench`, asking before each command that needs root.
 
+To reach the servers from an agent rather than by hand, register the delegate
+the last phase installed:
+
+```
+claude mcp add --scope user shuttle -- ~/.local/bin/shuttle-delegate
+```
+
 ## How it works
 
 ```
-                             host
+            MCP client (Claude Code, Claude Desktop, ...)
+                               |
+                        stdio: four tools
+                               |
+                   shuttle-delegate, on the host
                                |
               127.0.0.1:8081   |   127.0.0.1:8082
             +------------------+------------------+
@@ -128,9 +145,48 @@ The installer writes these files, and nothing else:
 | `~/.local/state/shuttle/install.log` | every command that changed the system |
 | `~/.local/state/shuttle/bench-*.json` | benchmark results with their configuration |
 | `/etc/cdi/nvidia.yaml` | the CDI specification, written as root by the `gpu` phase |
+| `~/.local/bin/shuttle-delegate` | the delegate launcher, written by the `delegate` phase |
 
 A generated file is rewritten only when its content changes, and the previous
 version is kept as `<name>.bak.<timestamp>`.
+
+## Delegating
+
+The delegate is an MCP server. It reads `stack.env`, talks to the two servers
+over their published ports, and exposes four tools.
+
+Every tool takes a **path**, not text. The file is read on this machine, split
+if it does not fit the server's context, and only the result crosses back. An
+agent that reads a file itself and pastes the contents into a tool call spends
+exactly the tokens the project exists to save, so the tool descriptions say so
+and the instructions repeat it.
+
+| Tool | Takes | Returns |
+|---|---|---|
+| `shuttle_status` | nothing | which servers answer, their models and contexts |
+| `shuttle_summarise` | path, words, focus, server | one summary, however many parts the file needed |
+| `shuttle_classify` | path, labels, question, server | one of the labels, the vote and the agreement |
+| `shuttle_extract` | path, JSON schema, instructions, server | the fields, in the shape asked for |
+
+Labels and field shapes are enforced by llama-server through a response
+format, so an answer is valid by construction rather than by parsing hope.
+Every answer reports `local_calls` and `local_tokens`: the work the machine
+did, which is the work the caller's context did not have to hold.
+
+A file longer than the context is summarised in parts and the parts folded
+together, repeatedly, until one remains. Classification votes across the parts
+and reports how far they agreed. Extraction refuses such a file outright,
+because merging fields across parts means inventing a precedence the caller
+never gave.
+
+Measured on the reference machine: `install.sh`, 35 KB, summarised in two
+parts and one fold for 13260 local tokens; `CONTRIBUTING.md` yielded its
+subject-length limit, linter and indent style in a single call of 1410.
+
+Qwen3 reasons before answering by default, and that reasoning is spent from
+the same budget as the answer. The delegate turns it off. Left on, a request
+with 200 tokens to spend returns an empty string and a finish reason of
+`length`.
 
 ## Configuration
 
@@ -308,8 +364,7 @@ trade is not acceptable.
 
 ## Roadmap
 
-- **M1 — delegate.** An MCP server that exposes these two llama-servers as
-  tools, so an agent can hand work over without knowing the addresses.
+- **M1 — delegate.** Done: see *Delegating* above.
 - **M2 — sessions and KV.** Named sessions on top of the slot save and restore
   that M0 verifies, so a long context survives a restart.
 - **M3 — WEFT.** Shared conventions with
