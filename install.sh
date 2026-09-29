@@ -19,12 +19,27 @@ readonly VRAM_RESERVE_MB=768
 readonly DRAFT_OVERHEAD_MB=256
 # q8_0 KV of Qwen3-8B: 8 KV heads * 128 dims * (K + V) * 1 byte.
 readonly KV_BYTES_PER_TOKEN_LAYER=2048
-readonly PHASES=(detect plan)
+readonly PHASES=(detect plan host)
 
 declare -rA SERVER_PORT=([long]=8081 [fast]=8082)
 
+# Every difference between the supported distributions lives here.
+declare -rA DISTRO=(
+	[arch.refresh]=""
+	[arch.install]="pacman -S --needed --noconfirm"
+	[arch.packages]="podman passt jq curl"
+	[arch.gpu_packages]="nvidia-container-toolkit"
+	[arch.gpu_repo]=""
+	[ubuntu.refresh]="apt-get update"
+	[ubuntu.install]="apt-get install -y"
+	[ubuntu.packages]="podman passt uidmap jq curl"
+	[ubuntu.gpu_packages]="nvidia-container-toolkit"
+	[ubuntu.gpu_repo]=nvidia_apt_repo
+)
+
 phases=()
 dry_run=0
+assume_yes=0
 use_gpu=1
 use_draft=1
 expose_direct=1
@@ -84,10 +99,11 @@ usage()
 usage: install.sh [phase...] [options]
 
 Phases always run in this order; without any, all of them run:
-  detect plan
+  detect plan host
 
 Options:
   --dry-run                  show commands and file changes, change nothing
+  --yes                      do not ask before commands that run as root
   --ctx N                    context of shuttle-long (default: from RAM)
   --ngl N                    layers of shuttle-long on the GPU
   --threads N                CPU threads of both servers (default: cores)
@@ -184,6 +200,24 @@ run()
 	"$@"
 }
 
+confirm()
+{
+	local reply
+
+	if (( assume_yes || dry_run )); then
+		return 0
+	fi
+	[[ -t 0 ]] || die "no terminal to confirm '$*'; rerun with --yes"
+	read -r -p "    run as root: $* [y/N] " reply
+	[[ $reply == [yY] || $reply == [yY][eE][sS] ]] || die "declined: $*"
+}
+
+root()
+{
+	confirm "$(quote "$@")"
+	run sudo "$@"
+}
+
 # Leading zeros are refused because bash arithmetic reads them as octal.
 need_number()
 {
@@ -235,9 +269,10 @@ parse_args()
 {
 	while (( $# )); do
 		case $1 in
-		detect|plan)
+		detect|plan|host)
 			phases+=("$1") ;;
 		--dry-run)		dry_run=1 ;;
+		--yes)			assume_yes=1 ;;
 		--no-gpu)		use_gpu=0 ;;
 		--no-draft)		use_draft=0 ;;
 		--expose-direct)	expose_direct=1 ;;
@@ -263,7 +298,7 @@ parse_args()
 finish_options()
 {
 	if (( ${#phases[@]} == 0 )); then
-		phases=(detect plan)
+		phases=(detect plan host)
 	fi
 	models_dir=$data_dir/models
 }
@@ -546,6 +581,13 @@ load_facts()
 	facts_loaded=1
 }
 
+require_supported()
+{
+	load_facts
+	(( ${#blockers[@]} == 0 )) ||
+		die "blocked by: ${blockers[*]} (see the detect phase)"
+}
+
 hf_entry()
 {
 	local repo=$1 name=$2 url json
@@ -742,6 +784,83 @@ phase_plan()
 		printf 'setting\tvalue\treason (~ marks an estimate)\n'
 		printf '%s\n' "${plan[@]}"
 	} | table 12 22
+}
+
+# NVIDIA's documented apt source, with the armored key kept as .asc so
+# that gpg is not needed on the host.
+nvidia_apt_repo()
+{
+	local base=https://nvidia.github.io/libnvidia-container
+	local key=/usr/share/keyrings/nvidia-container-toolkit-keyring.asc
+	local list=/etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+	run curl -fsSL -o "$tmp_dir/nvidia.asc" "$base/gpgkey"
+	run curl -fsSL -o "$tmp_dir/nvidia.list" \
+		"$base/stable/deb/nvidia-container-toolkit.list"
+	run sed -i "s#^deb https://#deb [signed-by=$key] https://#" \
+		"$tmp_dir/nvidia.list"
+	root install -m 0644 "$tmp_dir/nvidia.asc" "$key"
+	root install -m 0644 "$tmp_dir/nvidia.list" "$list"
+}
+
+host_packages()
+{
+	local -a refresh install packages gpu
+	local repo=${DISTRO[$distro.gpu_repo]}
+
+	read -ra refresh <<< "${DISTRO[$distro.refresh]}"
+	read -ra install <<< "${DISTRO[$distro.install]}"
+	read -ra packages <<< "${DISTRO[$distro.packages]}"
+	if (( gpu_used )); then
+		read -ra gpu <<< "${DISTRO[$distro.gpu_packages]}"
+		packages+=("${gpu[@]}")
+		if [[ -n $repo ]]; then
+			"$repo"
+		fi
+	fi
+	if (( ${#refresh[@]} )); then
+		root "${refresh[@]}"
+	fi
+	root "${install[@]}" "${packages[@]}"
+}
+
+# The fixed range must not overlap another user's, or two users would
+# share container UIDs.
+host_subids()
+{
+	local f
+
+	if has_subids; then
+		info "subuid/subgid: present"
+		return 0
+	fi
+	for f in /etc/subuid /etc/subgid; do
+		if awk -F: '$2 < 165536 && $2 + $3 > 100000 { found = 1 }
+			    END { exit !found }' "$f" 2>/dev/null; then
+			die "$f already uses part of 100000-165535;" \
+				"add a free range for $user by hand"
+		fi
+	done
+	root usermod --add-subuids 100000-165535 \
+		--add-subgids 100000-165535 "$user"
+	run podman system migrate
+}
+
+host_linger()
+{
+	if [[ $(linger_state) == yes ]]; then
+		info "linger: enabled"
+		return 0
+	fi
+	root loginctl enable-linger "$user"
+}
+
+phase_host()
+{
+	require_supported
+	host_packages
+	host_subids
+	host_linger
 }
 
 main()
