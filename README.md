@@ -142,6 +142,8 @@ The installer writes these files, and nothing else:
 | `~/.config/shuttle/long.env` | `LLAMA_ARG_*` for `shuttle-long` |
 | `~/.config/shuttle/fast.env` | `LLAMA_ARG_*` for `shuttle-fast` |
 | `~/.config/shuttle/stack.env` | URLs, addresses and ports, for callers |
+| `.shuttle/runs/<id>.md` | the whole output of each call, beside the working directory |
+| `.shuttle/audit.jsonl` | one line per call |
 | `~/.config/containers/systemd/shuttle.network` | the internal network unit |
 | `~/.config/containers/systemd/shuttle-long.container` | the long server unit |
 | `~/.config/containers/systemd/shuttle-fast.container` | the fast server unit |
@@ -159,6 +161,30 @@ version is kept as `<name>.bak.<timestamp>`.
 
 The delegate is an MCP server. It reads `stack.env`, talks to the two servers
 over their published ports, and exposes four tools.
+
+### What it saves, on one real task
+
+The task: one sentence on what each of the installer's ten phases does.
+Reading `install.sh` to answer it costs 12844 tokens of context, counted with
+the server's own tokeniser. Ten narrow questions through `ask_file` come back
+as 468.
+
+```
+reading the file               12844 tokens of context
+ten answers instead              468 tokens of context
+saved                          12376 tokens (97%)
+spent on this machine           2557 tokens
+quotations not in the file         3
+```
+
+`python -m evals.reduction` repeats it. The last line is there on purpose: a
+saving bought with a wrong answer is not a saving, so the quotations that are
+not in the file are counted beside it.
+
+The first attempt at this measurement gave the same 97% and four of the ten
+answers were about the wrong phase, because a pattern landing on a six-line
+function pulled thirty lines after it and the model read the next function
+too. That is what `until` is for.
 
 ### Registering it with a client
 
@@ -242,9 +268,9 @@ and the instructions repeat it.
 |---|---|---|
 | `status` | nothing | which servers answer, their models and contexts |
 | `summarize_file` | path, words, focus, profile | one summary, however many parts the file needed |
-| `ask_file` | path, question, pattern, context, words, profile | the answer, or that the file does not answer |
+| `ask_file` | path, question, pattern, until, context, words, profile | the answer, or that the file does not answer |
 | `classify_file` | path, labels, question, profile | one of the labels, the vote and the agreement |
-| `extract` | path, JSON schema, instructions, pattern, context, profile | the fields, in the shape asked for |
+| `extract` | path, JSON schema, instructions, pattern, until, context, profile | the fields, in the shape asked for |
 | `start_job` | a tool name and its arguments | a job id, at once |
 | `get_status` | a job id | queued, running, done or failed, with the time |
 | `get_result` | a job id | the finished answer, as the tool would have returned it |
@@ -352,9 +378,12 @@ deciding what matters. Keep the choosing, hand over the reading.
 
 - **Give a path, never contents.** Reading a file yourself and pasting it into
   a tool call spends exactly the tokens the tool exists to save.
-- **Pass a `pattern` whenever you can name what you are after**, and widen
-  `context` until the region covers a whole function or section. The same
-  answer costs 408 tokens instead of 13079.
+- **Pass a `pattern` whenever you can name what you are after**, and give
+  `until` as well whenever the passage has an end you can name:
+  `^[a-z_]+\(\)` for the next shell function, `^## ` for the next section,
+  `^\d+\.\d+ ` for the next clause. The same answer costs 408 tokens
+  instead of 13079, and the region stops before the neighbour it would
+  otherwise be confused with.
 - **Ask several questions of one region rather than one question of a file.**
   The server keeps the cache of a prefix it has already read, so the second
   question about the same text is about twice as fast.
@@ -628,7 +657,8 @@ trade is not acceptable.
 
 ## Roadmap
 
-- **M1 — delegate.** Done: see *Delegating* above.
+- **M1 — delegate.** Done: see *Delegating* above, and *What it saves, on
+  one real task* for the measured reduction that completes it.
 - **M2 — measured behaviour, sessions and KV.** The evaluation set is done:
   see *How often it is right* above. Named sessions on top of the KV slot
   dumps are next. A first measurement appeared to rule them out, and it was
