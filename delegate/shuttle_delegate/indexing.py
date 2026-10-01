@@ -136,6 +136,17 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 CREATE INDEX IF NOT EXISTS chunks_document ON chunks (document, ordinal);
 CREATE INDEX IF NOT EXISTS chunks_clause ON chunks (clause);
+CREATE TABLE IF NOT EXISTS digests (
+    chunk_id INTEGER PRIMARY KEY,
+    summary  TEXT NOT NULL,
+    made_at  REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS document_digests (
+    path     TEXT PRIMARY KEY,
+    summary  TEXT NOT NULL,
+    sections INTEGER NOT NULL,
+    made_at  REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS searches (
     question TEXT NOT NULL,
     wanted   INTEGER NOT NULL,
@@ -209,18 +220,34 @@ class Hit:
     text: str
     score: float
     how: str
+    # A line written overnight saying what the section is about, where
+    # one has been written. A page of a datasheet that is all numbers
+    # has an excerpt nobody can read and a summary anyone can.
+    summary: str = ""
 
     def report(self, room: int) -> dict[str, Any]:
+        """The hit, with as much of its text as there is room for.
+
+        Below the floor the excerpt stops being worth its tokens:
+        sixty characters of a datasheet's numbers say nothing, and a
+        line saying what the section is about says something. The
+        summary stands in only there, and the reply says the text was
+        left out so that nobody quotes a label. Carrying both at
+        every size was measured to cost two of three hits.
+        """
         entry: dict[str, Any] = {
             "file": self.file,
             "page": self.page,
             "section": self.heading,
             "score": round(self.score, 4),
             "found_by": self.how,
-            "text": self.text[:room],
         }
         if self.clause:
             entry["clause"] = self.clause
+        if room <= MIN_EXCERPT and self.summary:
+            entry["summary"] = self.summary
+        else:
+            entry["text"] = self.text[:room]
         return entry
 
 
@@ -418,8 +445,15 @@ def forget(db: sqlite3.Connection, file: str) -> int:
         )
     ]
     db.executemany("DELETE FROM vec_chunks WHERE id = ?", [(i,) for i in ids])
+    db.executemany(
+        "DELETE FROM digests WHERE chunk_id = ?", [(i,) for i in ids]
+    )
     db.execute("DELETE FROM chunks WHERE document = ?", (file,))
     db.execute("DELETE FROM documents WHERE path = ?", (file,))
+    # The sections a digest described are gone, so the line about the
+    # document as a whole describes a document that no longer exists
+    # in the index.
+    db.execute("DELETE FROM document_digests WHERE path = ?", (file,))
     db.execute("DELETE FROM searches")
     return len(ids)
 
@@ -595,6 +629,9 @@ def _rows(
 ) -> list[Hit]:
     if not chosen:
         return []
+    from .digest import summaries
+
+    said = summaries(db, [entry[0] for entry in chosen])
     places = ",".join("?" * len(chosen))
     found = {
         int(row["id"]): row
@@ -618,6 +655,7 @@ def _rows(
                 text=str(row["text"]),
                 score=score,
                 how=how,
+                summary=said.get(row_id, ""),
             )
         )
     return hits
@@ -656,11 +694,23 @@ def _trim(
     holding three of them would have meant thirty characters each,
     and two units somebody can read beat three nobody can.
     """
+    from .digest import CAVEAT
+
     kept = list(hits)
     while True:
         room = EXCERPT_CHARS
         while True:
-            shortened = answer | {"hits": [hit.report(room) for hit in kept]}
+            reported = [hit.report(room) for hit in kept]
+            shortened = answer | {"hits": reported}
+            # Said once for the reply rather than once per hit: it is
+            # true of every summary in it, and three copies of the
+            # same sentence cost thirty tokens of a budget of three
+            # hundred.
+            if any("summary" in one for one in reported):
+                shortened["summaries"] = CAVEAT
+                shortened["text_left_out"] = (
+                    "no room; ask for fewer hits to see the text"
+                )
             if len(kept) < len(hits):
                 shortened["hits_dropped"] = len(hits) - len(kept)
             if count(json.dumps(shortened, ensure_ascii=False)) <= budget:
@@ -782,7 +832,7 @@ def search(
             hits, about = _look(db, question, limit)
             if ttl > 0:
                 remember(db, question, limit, hits, about)
-        answer: dict[str, Any] = {"index": str(index_file())} | about
+        answer: dict[str, Any] = dict(about)
         if count is None:
             answer["trimmed"] = False
             return _trim(answer, hits, lambda _text: 0, budget)

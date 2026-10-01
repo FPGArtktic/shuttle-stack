@@ -403,7 +403,7 @@ def search(
             hits, about = _look(db, question, limit)
             if ttl > 0:
                 indexing.remember(db, key, limit, hits, about)
-        answer: dict[str, Any] = {"index": str(indexing.index_file())} | about
+        answer: dict[str, Any] = dict(about)
         if count is None:
             answer["trimmed"] = False
             return indexing._trim(answer, hits, lambda _text: 0, budget)

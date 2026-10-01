@@ -20,7 +20,8 @@ from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import code, indexing
+from . import code, digest, indexing
+from .backend import Server
 from .config import config_home
 from .documents import SUFFIXES as DOCUMENT_SUFFIXES
 from .indexing import Count
@@ -64,6 +65,10 @@ class Settings:
 
     roots: tuple[Path, ...]
     heading: str = indexing.HEADING
+    # Digesting a document costs about as long again as indexing it
+    # and buys a readable line for every section, which is worth
+    # having overnight and not worth waiting for by hand.
+    digest: bool = True
 
 
 @dataclass
@@ -72,6 +77,8 @@ class Done:
 
     path: str
     sections: int = 0
+    digested: int = 0
+    note: str = ""
     seconds: float = 0.0
     how: str = ""
     error: str = ""
@@ -124,6 +131,7 @@ def settings(file: Path | None = None) -> Settings:
     return Settings(
         roots=tuple(found),
         heading=str(written.get("heading", indexing.HEADING)),
+        digest=bool(written.get("digest", True)),
     )
 
 
@@ -132,6 +140,19 @@ def wanted(path: Path) -> bool:
     if SKIP & set(path.parts):
         return False
     return path.suffix.lower() in SUFFIXES or code.is_source(path)
+
+
+def _server() -> Server:
+    """The long server, for the digesting.
+
+    Read here rather than passed in: a sweep is started by a timer
+    with no caller to hand one over, and the profile that writes a
+    section's label is not a choice worth a configuration field.
+    """
+    from .backend import Backend
+    from .config import load_endpoints
+
+    return Backend(load_endpoints()["long"])
 
 
 def documents(roots: tuple[Path, ...]) -> list[Path]:
@@ -209,12 +230,34 @@ def one(path: Path, chosen: Settings) -> Done:
             seconds=round(time.monotonic() - started, 1),
             error=f"{type(error).__name__}: {error}",
         )
-    return Done(
+    done = Done(
         str(path),
         sections=stored,
         seconds=round(time.monotonic() - started, 1),
         how=how,
     )
+    if chosen.digest:
+        _digest(path, done)
+    done.seconds = round(time.monotonic() - started, 1)
+    return done
+
+
+def _digest(path: Path, done: Done) -> None:
+    """Give the sections their lines, or say why they have none.
+
+    Separate from the indexing, and failing separately. The document
+    is in the index by the time this runs: a server that is down or a
+    sweep that runs before the stack has started should leave a
+    searchable document without a label, not a file the morning
+    report calls failed and the next pass indexes all over again.
+    """
+    try:
+        with closing(indexing.connect()) as db:
+            done.digested = digest.whole(
+                db, _server(), Path(path).name
+            ).sections
+    except Exception as error:  # noqa: BLE001 - a label is not the file
+        done.note = f"not digested: {type(error).__name__}: {error}"
 
 
 def run(chosen: Settings | None = None, force: bool = False) -> Report:

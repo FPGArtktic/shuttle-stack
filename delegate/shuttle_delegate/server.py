@@ -18,6 +18,7 @@ from . import (
     audit,
     cascade,
     code,
+    digest,
     indexing,
     profiles,
     runs,
@@ -596,8 +597,13 @@ def search_code(
 def list_indexed() -> dict[str, Any]:
     with closing(code.connect()) as db:
         answers.prepare(db)
+        said = digest.of_documents(db)
+        held = indexing.indexed(db)
+        for one in held["documents"]:
+            if one["file"] in said:
+                one["summary"] = said[one["file"]]
+        if said:
+            held["summaries"] = digest.CAVEAT
         return (
-            indexing.indexed(db)
-            | {"sources": code.indexed(db)["sources"]}
-            | answers.kept(db)
+            held | {"sources": code.indexed(db)["sources"]} | answers.kept(db)
         )
