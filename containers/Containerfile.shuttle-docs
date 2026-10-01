@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# Everything needed to get text out of a PDF, and nothing else.  The
+# container is run with --network=none and only the document's directory
+# mounted read-only, so a document that tries something cannot reach
+# anywhere and cannot write.
+FROM docker.io/library/debian:13-slim
+
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends \
+		poppler-utils \
+		tesseract-ocr \
+		tesseract-ocr-eng \
+		tesseract-ocr-pol \
+		jq \
+	&& rm -rf /var/lib/apt/lists/*
+
+COPY shuttle-extract /usr/local/bin/shuttle-extract
+
+# A document is data, never a program: nothing here runs as root and the
+# entry point takes a path rather than a command.
+USER nobody
+ENTRYPOINT ["/usr/local/bin/shuttle-extract"]

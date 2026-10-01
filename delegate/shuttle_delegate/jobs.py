@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-only
 """Work that outlives the call that asked for it.
 
+Durations and the pruning order come from a monotonic clock: with the
+wall clock, a step backwards — which a running machine does — reported
+a negative elapsed time and could discard the job that had just
+finished in favour of an older one.
+
 A summary of a large file took four minutes on the reference machine,
 and a client that waits for an answer that long will give up before the
 server does. A job is started, polled and collected instead, so the
@@ -46,7 +51,7 @@ class Job:
     error: str = ""
 
     def report(self) -> dict:
-        now = time.time()
+        now = time.monotonic()
         entry = {
             "job": self.id,
             "tool": self.tool,
@@ -85,20 +90,20 @@ class Queue:
     def _run(self, job: Job, call: Callable[..., dict]) -> None:
         with self._lock:
             job.state = RUNNING
-            job.started_at = time.time()
+            job.started_at = time.monotonic()
         try:
             answer = call(**job.arguments)
         except Exception as error:  # noqa: BLE001 - kept for the caller
             with self._lock:
                 job.state = FAILED
                 job.error = f"{type(error).__name__}: {error}"
-                job.finished_at = time.time()
+                job.finished_at = time.monotonic()
                 self._forget_old()
             return
         with self._lock:
             job.state = DONE
             job.result = answer
-            job.finished_at = time.time()
+            job.finished_at = time.monotonic()
             self._forget_old()
 
     def start(
@@ -159,6 +164,6 @@ class Queue:
 
     def wait(self, timeout: float = 30.0) -> None:
         """For tests: block until nothing is in flight."""
-        deadline = time.time() + timeout
-        while self.pending() and time.time() < deadline:
+        deadline = time.monotonic() + timeout
+        while self.pending() and time.monotonic() < deadline:
             time.sleep(0.01)

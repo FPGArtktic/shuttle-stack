@@ -42,7 +42,15 @@ MARKUP = re.compile(r"[`*]+")
 
 
 def flatten(text: str) -> str:
-    """Wrapping, markup and case dropped, for comparison only."""
+    """Wrapping, markup and case dropped, for comparison only.
+
+    The markup characters are removed from both the quotation and the
+    source. In a shell script a backtick is syntax rather than markup,
+    so in principle this could ground an invention that matches only
+    once the backticks are gone. That is accepted: leaving them in was
+    measured to report two of three genuine citations as missing, and
+    a check distrusted that often is a check nobody reads.
+    """
     plain = MARKUP.sub("", CONTINUED.sub(" ", text))
     return SPACE.sub(" ", plain).strip().lower()
 

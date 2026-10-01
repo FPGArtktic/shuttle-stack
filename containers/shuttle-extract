@@ -1,0 +1,71 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# Page by page text out of a PDF, the text layer first and OCR only for
+# the pages that have none.  Prints one JSON object on stdout.  Runs
+# with no network and only the document mounted, so everything it needs
+# is in the image.
+
+set -eu
+
+MIN_CHARS=${SHUTTLE_MIN_CHARS:-40}
+DPI=${SHUTTLE_OCR_DPI:-300}
+LANGS=${SHUTTLE_OCR_LANGS:-eng+pol}
+
+file=${1:?usage: shuttle-extract FILE.pdf [first] [last]}
+[ -r "$file" ] || { echo "cannot read $file" >&2; exit 2; }
+
+pages=$(pdfinfo "$file" | sed -n 's/^Pages:[[:space:]]*//p')
+case $pages in
+'' | *[!0-9]*)
+	echo "$file: pdfinfo reports no page count; not a PDF?" >&2
+	exit 2 ;;
+esac
+
+first=${2:-1}
+last=${3:-$pages}
+[ "$last" -le "$pages" ] || last=$pages
+
+# A range outside the document is a mistake worth hearing about: an
+# empty list of pages reads as a document with nothing in it.
+if [ "$first" -lt 1 ] || [ "$first" -gt "$pages" ]; then
+	echo "$file has $pages page(s); asked to start at $first" >&2
+	exit 2
+fi
+if [ "$first" -gt "$last" ]; then
+	echo "asked for pages $first to $last, which is backwards" >&2
+	exit 2
+fi
+
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+
+page_json()
+{
+	n=$1
+	text=$(pdftotext -f "$n" -l "$n" -layout "$file" - 2>/dev/null || true)
+	chars=$(printf '%s' "$text" | tr -d '[:space:]' | wc -c)
+	ocr=false
+	if [ "$chars" -lt "$MIN_CHARS" ]; then
+		ocr=true
+		pdftoppm -f "$n" -l "$n" -r "$DPI" -png -singlefile \
+			"$file" "$scratch/page" 2>/dev/null || true
+		if [ -f "$scratch/page.png" ]; then
+			text=$(tesseract "$scratch/page.png" - -l "$LANGS" \
+				2>/dev/null || true)
+		fi
+		rm -f "$scratch/page.png"
+	fi
+	printf '%s' "$text" | jq -Rs --argjson page "$n" \
+		--argjson ocr "$ocr" '{page: $page, ocr: $ocr, text: .}'
+}
+
+n=$first
+: > "$scratch/pages"
+while [ "$n" -le "$last" ]; do
+	page_json "$n" >> "$scratch/pages"
+	n=$((n + 1))
+done
+
+jq -s --argjson pages "$pages" --arg file "$(basename "$file")" \
+	'{file: $file, pages_in_file: $pages, pages: .}' < "$scratch/pages"

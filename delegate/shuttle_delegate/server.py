@@ -22,9 +22,16 @@ from .retrieval import PatternError
 from .sessions import SessionError
 from .tasks import TaskError
 
+DEFAULT_PROFILE = "long"
+
 # Failures the caller can do something about: a path that is not there,
 # a pattern that matches nothing, a server that is down.  They reach the
 # model as a message rather than as a crash it cannot read.
+#
+# Every entry is a type something here raises deliberately. A bare
+# ValueError was in this list and had to come out: a programming
+# mistake raises one too, so a bug in the delegate reached the model
+# dressed as a failure it could do something about.
 EXPECTED = (
     TaskError,
     DocumentError,
@@ -35,7 +42,6 @@ EXPECTED = (
     BackendError,
     ConfigError,
     PatternError,
-    ValueError,
     OSError,
 )
 
@@ -107,7 +113,7 @@ def perform(name: str, call: Callable[..., dict], kwargs: dict) -> dict:
         # climbs, and capping the report on a server that did no work
         # contacted the wrong tokeniser and applied the wrong limit.
         chosen = profiles.get(
-            result.get("profile") or kwargs.get("profile") or "long"
+            result.get("profile") or kwargs.get("profile") or DEFAULT_PROFILE
         )
         counted = runs.report(
             servers()[chosen.server].count_tokens,
@@ -170,7 +176,7 @@ def as_job(tool: str) -> Callable[..., dict]:
     return run
 
 
-def backend(profile: str = "long") -> Backend:
+def backend(profile: str = DEFAULT_PROFILE) -> Backend:
     """The server a profile names, sampled the way it asks for."""
     chosen = profiles.get(profile)
     server = servers()[chosen.server]
@@ -203,6 +209,9 @@ def _describe(server: Backend) -> dict:
 )
 @anticipated
 def status() -> dict:
+    # The one tool that reports a failure instead of raising it. Its
+    # job is to say what is wrong, and an uninstalled stack is the
+    # answer to that question rather than an obstacle to answering it.
     try:
         return {"servers": [_describe(b) for b in servers().values()]}
     except ConfigError as error:

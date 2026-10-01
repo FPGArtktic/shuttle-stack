@@ -1043,7 +1043,7 @@ host_packages()
 		mapfile -t missing_gpu < <(missing_packages "${gpu[@]}")
 	fi
 	if (( ${#missing_base[@]} == 0 && ${#missing_gpu[@]} == 0 )); then
-		info "packages: ${#base[@]} present"
+		info "packages: $(( ${#base[@]} + ${#gpu[@]} )) present"
 		return 0
 	fi
 	if (( ${#missing_base[@]} )); then

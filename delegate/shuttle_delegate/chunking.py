@@ -38,6 +38,14 @@ def chunk(text: str, limit: int) -> list[str]:
 
     An empty text yields no chunks, so a caller never sends a prompt
     with nothing in it.
+
+    The packing is not byte-for-byte faithful and is not meant to be:
+    a paragraph too long for the limit is split on its lines and the
+    pieces are rejoined with a blank line between them, and lines that
+    held only whitespace are dropped. What the model reads is
+    therefore the text's content rather than its exact shape. Nothing
+    downstream depends on the shape: the grounding check collapses
+    whitespace on both sides before comparing.
     """
     if limit < 1:
         raise ValueError(f"limit must be positive, got {limit}")
