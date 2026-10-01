@@ -587,6 +587,27 @@ def search_code(
 
 
 @mcp.tool(
+    description="Find every place in the indexed source that names "
+    "something: which files instantiate a module, include a header, "
+    "call a function, inherit a class, depend on a recipe, or assign "
+    "a variable. The answer is file:line for each, and it is a lookup "
+    "rather than a search — no model is asked and nothing is ranked, "
+    "because the parse already established the fact. A variable is "
+    "matched with its overrides too, so asking about RDEPENDS finds "
+    "the file that sets RDEPENDS:${PN}. Name a relation to narrow it: "
+    "instantiates, includes, calls, uses, depends, provides, assigns."
+)
+@anticipated
+def find_references(
+    name: str,
+    relation: str = "",
+    limit: int = code.MAX_REFERENCES,
+) -> dict[str, Any]:
+    with closing(code.connect()) as db:
+        return code.references(db, name, relation, limit)
+
+
+@mcp.tool(
     description="List what is indexed: documents with how many "
     "sections and pages each contributed, source with its language "
     "and how it was cut, and the files that have kept answers. Call "

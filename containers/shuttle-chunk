@@ -53,6 +53,7 @@ BY_SUFFIX = {
     ".sh": "bash",
     ".bash": "bash",
     ".py": "python",
+    ".rs": "rust",
     ".v": "verilog",
     ".vh": "verilog",
     ".sv": "systemverilog",
@@ -62,6 +63,7 @@ BY_SUFFIX = {
     ".mk": "make",
     ".dts": "devicetree",
     ".dtsi": "devicetree",
+    ".go": "go",
     ".tcl": "tcl",
     ".sdc": "tcl",
     ".xdc": "tcl",
@@ -97,6 +99,26 @@ UNITS: dict[str, frozenset[str]] = {
     ),
     "bash": frozenset({"function_definition"}),
     "python": frozenset({"function_definition", "class_definition"}),
+    "rust": frozenset(
+        {
+            "function_item",
+            "struct_item",
+            "enum_item",
+            "trait_item",
+            "impl_item",
+            "mod_item",
+            "union_item",
+            "type_item",
+            "macro_definition",
+        }
+    ),
+    "go": frozenset(
+        {
+            "function_declaration",
+            "method_declaration",
+            "type_declaration",
+        }
+    ),
     "verilog": frozenset(
         {
             "module_declaration",
@@ -155,6 +177,10 @@ INSIDE: dict[str, frozenset[str]] = {
     "tcl": frozenset({"namespace"}),
 }
 INSIDE["systemverilog"] = INSIDE["verilog"]
+# A Rust impl block holds the methods, and a module with a body holds
+# everything; both are worth descending into so that a method is its
+# own unit rather than a line inside a four-hundred-line impl.
+INSIDE["rust"] = frozenset({"impl_item", "mod_item", "trait_item"})
 
 # Constructs with nothing to be named by. An always block has no name
 # and `named` would otherwise return the first thing in its event
@@ -207,6 +233,70 @@ MIN_GROUP = 40
 # blame.tcl that way, and a citation reading "lines 1-1370" tells a
 # reader nothing they did not have before asking.
 MAX_GROUP_SHARE = 0.9
+
+# What one file says about another, or about a name. Read off the same
+# tree as the units, because a graph built by regular expression gets
+# a module name out of a comment and an instantiation out of a string
+# literal. Each entry is a node type and the kind of edge it makes;
+# the name is the first identifier under it, which was checked against
+# every grammar rather than assumed.
+EDGES: dict[str, dict[str, str]] = {
+    "c": {
+        "preproc_include": "include",
+        "call_expression": "call",
+    },
+    "verilog": {
+        "include_compiler_directive": "include",
+        "package_import_declaration": "use",
+        "module_instantiation": "instantiate",
+    },
+    "vhdl": {
+        "use_clause": "use",
+        "component_instantiation": "instantiate",
+        "entity_instantiation": "instantiate",
+        "component_declaration": "declare",
+    },
+    "bitbake": {
+        "inherit_directive": "inherit",
+        "require_directive": "require",
+        "include_directive": "require",
+    },
+}
+EDGES["rust"] = {
+    "use_declaration": "use",
+    "mod_item": "include",
+    "call_expression": "call",
+    "macro_invocation": "call",
+}
+EDGES["go"] = {
+    "import_spec": "include",
+    "call_expression": "call",
+}
+EDGES["cpp"] = EDGES["c"]
+EDGES["systemverilog"] = EDGES["verilog"]
+
+# Variables whose value is a list of other recipes. The graph wants
+# the names in them, not the string: DEPENDS = "zlib openssl" is two
+# edges. The override stays on the variable so that a question about
+# which layer sets RDEPENDS:${PN} can be answered.
+BITBAKE_LISTS = frozenset({"DEPENDS", "RDEPENDS", "PROVIDES", "RPROVIDES"})
+# Commands that pull in another file, by language. A `source` in a
+# shell script and a `source` in a constraint file mean the same thing
+# and the grammars spell them differently.
+SOURCES = {"bash": frozenset({"source", "."}), "tcl": frozenset({"source"})}
+# Where a name inside a quoted or dotted reference ends. VHDL writes
+# `work.debouncer` and `ieee.std_logic_1164.all`; the thing being
+# referred to is the last part that is not `all`.
+TAIL_SKIP = frozenset({"all", ""})
+
+
+@dataclass
+class Edge:
+    """One reference from this file to a name outside the unit."""
+
+    kind: str
+    name: str
+    line: int
 
 
 @dataclass
@@ -421,6 +511,142 @@ def collect(
     flush()
 
 
+def bare(text: str) -> str:
+    """A reference as a name: no quotes and no angle brackets.
+
+    A scoped path is kept whole. `std::io::Write` cut to `std` loses
+    what was imported and cut to `Write` loses where from; the lookup
+    matches a prefix, so the whole path answers a question about
+    either end of it.
+    """
+    return text.strip().strip("\"'<>").strip()
+
+
+def tail(text: str) -> str:
+    """The last meaningful part of a dotted reference."""
+    parts = [one for one in bare(text).split(".") if one not in TAIL_SKIP]
+    return parts[-1] if parts else ""
+
+
+def listed(value: str) -> list[str]:
+    """The recipe names inside a bitbake list, variables left alone."""
+    out = []
+    for word in bare(value).split():
+        if "${" in word or not word:
+            continue
+        out.append(word)
+    return out
+
+
+def words_of(node: Node) -> list[Node]:
+    """A Tcl or shell command's words, in order."""
+    out = []
+    for child in node.children:
+        if child.is_named:
+            out.append(child)
+    return out
+
+
+def edges(
+    node: Node, language: str, known: set[str], out: list[Edge]
+) -> None:
+    """Walk the whole tree, collecting what it refers to.
+
+    The whole tree and not one level: a call sits inside a function
+    body and an instantiation inside an architecture, which is the
+    point of having a tree.
+    """
+    wanted = EDGES.get(language, {})
+    kind = wanted.get(node.type) if node.is_named else None
+    if kind == "include" and node.type == "mod_item":
+        # `mod helpers;` names another file; `mod helpers { ... }`
+        # declares one here and is a unit rather than an edge.
+        if any(c.type == "declaration_list" for c in node.children):
+            kind = None
+    if kind:
+        _edge(node, kind, language, out)
+    elif node.is_named and node.type == "variable_assignment":
+        _bitbake_variable(node, language, out)
+    # A command only. A `proc` declaration is a unit and reads as a
+    # call of its own name otherwise, which put every proc in the
+    # graph as calling itself on the line that defines it.
+    elif node.is_named and node.type == "command":
+        _command(node, language, known, out)
+    for child in node.children:
+        edges(child, language, known, out)
+
+
+def _edge(node: Node, kind: str, language: str, out: list[Edge]) -> None:
+    line = node.start_point[0] + 1
+    if kind in {"inherit", "require"}:
+        for child in node.children:
+            if child.type in {"inherit_path", "include_path"}:
+                out.append(Edge(kind, bare(text_of(child)), line))
+        return
+    for child in node.children:
+        if not child.is_named:
+            continue
+        found = text_of(child)
+        if kind == "include":
+            out.append(Edge(kind, bare(found).split("/")[-1], line))
+        elif language == "vhdl":
+            out.append(Edge(kind, tail(found), line))
+        else:
+            out.append(Edge(kind, bare(found), line))
+        return
+
+
+def _bitbake_variable(node: Node, language: str, out: list[Edge]) -> None:
+    """DEPENDS and its relatives as edges, and every set as an assign.
+
+    Every assignment is recorded, not only the dependency lists: the
+    question M5 asks is which layer overrides a variable, and that
+    needs the ones nobody thought to enumerate.
+    """
+    if language != "bitbake":
+        return
+    line = node.start_point[0] + 1
+    children = [c for c in node.children if c.is_named]
+    if not children:
+        return
+    # The override is part of the variable, not noise beside it.
+    # "which layer overrides RDEPENDS:${PN}" is the question M5 asks,
+    # and an edge reading "RDEPENDS" cannot answer it.
+    name = text_of(children[0])
+    if len(children) > 1 and children[1].type == "override":
+        name += text_of(children[1])
+    out.append(Edge("assign", name, line))
+    plain = name.split(":")[0]
+    if plain in BITBAKE_LISTS and len(children) > 1:
+        for one in listed(text_of(children[-1])):
+            out.append(Edge(plain.lower(), one, line))
+
+
+def _command(
+    node: Node, language: str, known: set[str], out: list[Edge]
+) -> None:
+    """A shell or Tcl command: a source, a call, or neither.
+
+    A call is recorded only for a name the file defines itself.
+    Everything in a shell script is a command, and `ls` is not an edge
+    in anybody's graph; a proc the file declares and then uses is.
+    """
+    pulls = SOURCES.get(language, frozenset())
+    if not pulls:
+        return
+    spoken = words_of(node)
+    if not spoken:
+        return
+    first = text_of(spoken[0])
+    line = node.start_point[0] + 1
+    if first in pulls and len(spoken) > 1:
+        out.append(
+            Edge("source", bare(text_of(spoken[1])).split("/")[-1], line)
+        )
+    elif first in known:
+        out.append(Edge("call", first, line))
+
+
 def by_line(lines: list[str]) -> list[Unit]:
     """The fallback: blank-line blocks, with the lines they came from."""
     out: list[Unit] = []
@@ -463,6 +689,17 @@ def chunk(path: Path) -> dict[str, object]:
     share = round(errors(tree.root_node) / max(1, len(data)), 3)
     units: list[Unit] = []
     collect(tree.root_node, lines, language, units)
+    # Collected whatever happened to the units: a file the grammar
+    # could not cut into units may still have had its includes and
+    # instantiations read correctly, and the graph is the more robust
+    # half.
+    found: list[Edge] = []
+    known = {unit.name.split(".")[-1] for unit in units if unit.name}
+    edges(tree.root_node, language, known, found)
+    seen: dict[tuple[str, str, int], Edge] = {
+        (one.kind, one.name, one.line): one for one in found if one.name
+    }
+    graph = [asdict(one) for one in seen.values()]
     why = useless(units, len(lines), language)
     if why:
         return {
@@ -472,6 +709,7 @@ def chunk(path: Path) -> dict[str, object]:
             "why": why,
             "error_share": share,
             "units": [asdict(u) for u in by_line(lines)],
+            "edges": graph,
         }
     return {
         "file": path.name,
@@ -479,6 +717,7 @@ def chunk(path: Path) -> dict[str, object]:
         "how": "tree-sitter",
         "error_share": share,
         "units": [asdict(u) for u in units],
+        "edges": graph,
     }
 
 

@@ -21,7 +21,7 @@ import json
 import sqlite3
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -44,12 +44,14 @@ SUFFIXES = (
     ".cxx",
     ".dts",
     ".dtsi",
+    ".go",
     ".h",
     ".hh",
     ".hpp",
     ".inc",
     ".mk",
     ".py",
+    ".rs",
     ".sdc",
     ".sh",
     ".sv",
@@ -84,6 +86,14 @@ CREATE TABLE IF NOT EXISTS units (
 );
 CREATE INDEX IF NOT EXISTS units_source ON units (source, ordinal);
 CREATE INDEX IF NOT EXISTS units_name ON units (name);
+CREATE TABLE IF NOT EXISTS edges (
+    source TEXT NOT NULL,
+    kind   TEXT NOT NULL,
+    name   TEXT NOT NULL,
+    line   INTEGER NOT NULL,
+    PRIMARY KEY (source, kind, name, line)
+);
+CREATE INDEX IF NOT EXISTS edges_name ON edges (name, kind);
 """
 
 # The name and the kind are indexed beside the body, so that "who
@@ -140,6 +150,15 @@ class Unit:
 
 
 @dataclass(frozen=True)
+class Edge:
+    """One reference out of a file: a name and the line naming it."""
+
+    kind: str
+    name: str
+    line: int
+
+
+@dataclass(frozen=True)
 class Cut:
     """What the chunker made of one file."""
 
@@ -148,6 +167,7 @@ class Cut:
     how: str
     why: str
     units: list[Unit]
+    edges: list[Edge] = field(default_factory=list)
 
 
 def is_source(path: str | Path) -> bool:
@@ -211,6 +231,14 @@ def units(path: str) -> Cut:
             )
             for one in answer.get("units", [])
         ],
+        edges=[
+            Edge(
+                kind=str(one["kind"]),
+                name=str(one["name"]),
+                line=int(one["line"]),
+            )
+            for one in answer.get("edges", [])
+        ],
     )
 
 
@@ -222,6 +250,7 @@ def forget(db: sqlite3.Connection, file: str) -> int:
     ]
     db.executemany("DELETE FROM vec_units WHERE id = ?", [(i,) for i in ids])
     db.execute("DELETE FROM units WHERE source = ?", (file,))
+    db.execute("DELETE FROM edges WHERE source = ?", (file,))
     db.execute("DELETE FROM sources WHERE path = ?", (file,))
     db.execute("DELETE FROM searches")
     return len(ids)
@@ -263,12 +292,106 @@ def store(db: sqlite3.Connection, file: str, cut: Cut, lines: int) -> int:
                 "INSERT INTO vec_units (id, embedding) VALUES (?, ?)",
                 (row.lastrowid, blobs[order]),
             )
+        db.executemany(
+            "INSERT OR REPLACE INTO edges (source, kind, name, line)"
+            " VALUES (?, ?, ?, ?)",
+            [(file, one.kind, one.name, one.line) for one in cut.edges],
+        )
         db.execute(
             "INSERT INTO sources (path, language, how, units, lines,"
             " indexed_at) VALUES (?, ?, ?, ?, ?, ?)",
             (file, cut.language, cut.how, len(cut.units), lines, time.time()),
         )
     return len(cut.units)
+
+
+# What a question about a name is asking for, by the edge kinds that
+# answer it. Named rather than inferred: "who instantiates counter"
+# and "what does this recipe depend on" are different questions over
+# the same table, and guessing from the wording is how a graph query
+# starts returning the wrong direction.
+RELATIONS: dict[str, tuple[str, ...]] = {
+    "instantiates": ("instantiate",),
+    "includes": ("include", "require", "source"),
+    "calls": ("call",),
+    "uses": ("use", "inherit"),
+    "depends": ("depends", "rdepends"),
+    "provides": ("provides",),
+    "assigns": ("assign",),
+}
+# How many places a name may be referred to from before the answer
+# starts being a file listing rather than an answer.
+MAX_REFERENCES = 40
+# What may follow a name and still be the same thing: a bitbake
+# override, a Rust path, a Go selector, a VHDL library. The separator
+# has to be present, so that a question about `counter` is not
+# answered about `counterweight`.
+SEPARATORS = (":", "::", ".")
+
+
+def references(
+    db: sqlite3.Connection,
+    name: str,
+    relation: str = "",
+    limit: int = MAX_REFERENCES,
+) -> dict[str, Any]:
+    """Every place that names this thing, as file and line.
+
+    The exact question M5 asks of a scout: who instantiates module X,
+    and which file overrides variable Y. It is a lookup and not a
+    search — no model, no embedding, no ranking — because the answer
+    is a fact the parse already established and a ranked guess at it
+    would be worse.
+
+    A name is matched with whatever follows it as well as on its own,
+    so asking about RDEPENDS finds the file setting RDEPENDS:${PN},
+    asking about `fmt` finds the call to `fmt.Println`, and asking
+    about `std` finds `use std::io::Write`. The separator has to be
+    there: asking about `counter` does not match `counterweight`.
+    """
+    if not name.strip():
+        raise IndexingError("a reference needs a name to look for")
+    kinds = RELATIONS.get(relation, ()) if relation else ()
+    if relation and not kinds:
+        raise IndexingError(
+            f"{relation!r} is not a relation; the ones there are: "
+            + ", ".join(sorted(RELATIONS))
+        )
+    quoted = name.replace("\\", "\\\\").replace("%", "\\%")
+    quoted = quoted.replace("_", "\\_")
+    query = (
+        "SELECT source, kind, name, line FROM edges"
+        " WHERE (name = ?"
+        + "".join(" OR name LIKE ? ESCAPE '\\'" for _ in SEPARATORS)
+        + ")"
+    )
+    args: list[Any] = [name]
+    args.extend(f"{quoted}{one}%" for one in SEPARATORS)
+    if kinds:
+        query += " AND kind IN (" + ",".join("?" * len(kinds)) + ")"
+        args.extend(kinds)
+    query += " ORDER BY source, line LIMIT ?"
+    args.append(limit + 1)
+    rows = db.execute(query, args).fetchall()
+    found = [
+        {
+            "at": f"{row['source']}:{row['line']}",
+            "relation": str(row["kind"]),
+            "names": str(row["name"]),
+        }
+        for row in rows[:limit]
+    ]
+    answer: dict[str, Any] = {"name": name, "references": found}
+    if relation:
+        answer["relation"] = relation
+    if len(rows) > limit:
+        answer["more_than"] = limit
+    if not found:
+        answer["note"] = (
+            "nothing in the index names it; index_path reads a file in, "
+            "and list_indexed says what is already there"
+        )
+    return answer
 
 
 def _lexical(db: sqlite3.Connection, question: str) -> list[int]:

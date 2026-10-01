@@ -17,7 +17,7 @@ from typing import Any
 from unittest import mock
 
 from shuttle_delegate import code, indexing
-from shuttle_delegate.code import Cut, Unit, is_source
+from shuttle_delegate.code import Cut, Edge, Unit, is_source
 from shuttle_delegate.documents import DocumentError
 from shuttle_delegate.indexing import DIMENSIONS, IndexingError
 
@@ -54,6 +54,11 @@ CUT = Cut(
         Unit("always_construct", "counter.lines 6-8", 6, 8, "r <= r + 1"),
         Unit("task_declaration", "do_reset", 10, 12, "r <= 0 reset"),
     ],
+    edges=[
+        Edge("instantiate", "debouncer", 3),
+        Edge("instantiate", "clk_tick", 4),
+        Edge("include", "defs.svh", 1),
+    ],
 )
 
 
@@ -66,6 +71,8 @@ def done(
 class SuffixTest(unittest.TestCase):
     def test_the_languages_in_the_design_are_recognised(self) -> None:
         for name in (
+            "main.rs",
+            "server.go",
             "top.v",
             "top.sv",
             "cpu.vhd",
@@ -120,6 +127,30 @@ class ChunkerTest(unittest.TestCase):
         self.assertIn("chunk", argv)
         self.assertIn("--network=none", argv)
         self.assertIn("--read-only", argv)
+
+    def test_the_edges_come_back_with_their_lines(self) -> None:
+        self.ran(
+            done(
+                json.dumps(
+                    ANSWER
+                    | {
+                        "edges": [
+                            {
+                                "kind": "instantiate",
+                                "name": "debouncer",
+                                "line": 7,
+                            }
+                        ]
+                    }
+                )
+            )
+        )
+        cut = code.units(str(self.file))
+        self.assertEqual(cut.edges, [Edge("instantiate", "debouncer", 7)])
+
+    def test_a_chunker_that_reports_no_edges_is_not_an_error(self) -> None:
+        self.ran(done(json.dumps(ANSWER)))
+        self.assertEqual(code.units(str(self.file)).edges, [])
 
     def test_the_units_come_back_with_their_lines(self) -> None:
         self.ran(done(json.dumps(ANSWER)))
@@ -263,6 +294,116 @@ class IndexTest(unittest.TestCase):
             {row["file"]: row["cut_by"] for row in listed},
             {"counter.sv": "tree-sitter", "fallback.tcl": "lines"},
         )
+
+    def test_the_edges_are_stored_with_the_file(self) -> None:
+        self.feed()
+        held = {
+            (row["kind"], row["name"], row["line"])
+            for row in self.db.execute(
+                "SELECT kind, name, line FROM edges WHERE source = ?",
+                ("counter.sv",),
+            )
+        }
+        self.assertEqual(
+            held,
+            {
+                ("instantiate", "debouncer", 3),
+                ("instantiate", "clk_tick", 4),
+                ("include", "defs.svh", 1),
+            },
+        )
+
+    def test_reindexing_replaces_the_edges(self) -> None:
+        self.feed()
+        thinner = Cut(
+            "counter.sv",
+            "systemverilog",
+            "tree-sitter",
+            "",
+            CUT.units[:1],
+            [Edge("instantiate", "debouncer", 3)],
+        )
+        self.feed(cut=thinner)
+        held = self.db.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+        self.assertEqual(held, 1)
+
+    def test_who_instantiates_a_module(self) -> None:
+        """One of the two questions M5 asks of a scout."""
+        self.feed()
+        got = code.references(self.db, "debouncer", "instantiates")
+        self.assertEqual(
+            [one["at"] for one in got["references"]], ["counter.sv:3"]
+        )
+
+    def test_a_relation_narrows_what_comes_back(self) -> None:
+        self.feed()
+        got = code.references(self.db, "defs.svh", "instantiates")
+        self.assertEqual(got["references"], [])
+        self.assertIn("nothing in the index", got["note"])
+
+    def test_an_override_is_found_by_the_bare_variable(self) -> None:
+        """The other question: which file overrides variable Y."""
+        self.db.execute(
+            "INSERT INTO edges (source, kind, name, line)"
+            " VALUES ('a.bb', 'assign', 'RDEPENDS:${PN}', 16)"
+        )
+        self.db.commit()
+        got = code.references(self.db, "RDEPENDS")
+        self.assertEqual(got["references"][0]["names"], "RDEPENDS:${PN}")
+
+    def test_a_scoped_path_is_found_by_its_head(self) -> None:
+        self.db.executemany(
+            "INSERT INTO edges (source, kind, name, line) VALUES (?,?,?,?)",
+            [
+                ("a.rs", "use", "std::io::Write", 1),
+                ("a.go", "call", "fmt.Println", 18),
+            ],
+        )
+        self.db.commit()
+        self.assertEqual(
+            code.references(self.db, "std")["references"][0]["names"],
+            "std::io::Write",
+        )
+        self.assertEqual(
+            code.references(self.db, "fmt")["references"][0]["names"],
+            "fmt.Println",
+        )
+
+    def test_a_prefix_without_a_separator_is_not_a_match(self) -> None:
+        """counter must not answer about counterweight."""
+        self.db.execute(
+            "INSERT INTO edges (source, kind, name, line)"
+            " VALUES ('x.sv', 'instantiate', 'counterweight', 7)"
+        )
+        self.db.commit()
+        self.assertEqual(code.references(self.db, "counter")["references"], [])
+
+    def test_a_wildcard_in_the_name_is_text_not_a_pattern(self) -> None:
+        self.db.execute(
+            "INSERT INTO edges (source, kind, name, line)"
+            " VALUES ('x.sv', 'instantiate', 'anything', 7)"
+        )
+        self.db.commit()
+        self.assertEqual(code.references(self.db, "%")["references"], [])
+
+    def test_too_many_references_say_so(self) -> None:
+        self.db.executemany(
+            "INSERT INTO edges (source, kind, name, line) VALUES (?,?,?,?)",
+            [(f"f{n}.sv", "instantiate", "counter", n) for n in range(1, 8)],
+        )
+        self.db.commit()
+        got = code.references(self.db, "counter", limit=3)
+        self.assertEqual(len(got["references"]), 3)
+        self.assertEqual(got["more_than"], 3)
+
+    def test_an_empty_name_is_refused(self) -> None:
+        with self.assertRaises(IndexingError):
+            code.references(self.db, "  ")
+
+    def test_an_unknown_relation_lists_the_ones_there_are(self) -> None:
+        with self.assertRaises(IndexingError) as caught:
+            code.references(self.db, "counter", "wires-up")
+        self.assertIn("instantiates", str(caught.exception))
 
     def test_storing_nothing_is_an_error(self) -> None:
         empty = Cut("a.sv", "systemverilog", "tree-sitter", "", [])
