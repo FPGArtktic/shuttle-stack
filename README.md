@@ -27,6 +27,7 @@ and M2 the evaluation that says how far either can be trusted.
 | Direct host ports | working — `127.0.0.1:8081` and `:8082`, measured to reach an internal network |
 | Model download | working — size and sha256 from the Hugging Face tree API, resumable |
 | Benchmarks | working — `bench` writes JSON with the configuration it measured |
+| KV slot dumps | working — a document's cache survives a restart; 1.7x on the next question, 305 MiB per document |
 | `shuttle_status` | working — which servers answer, which model each holds, how large its context is |
 | `shuttle_summarise` | working — folds a file larger than the context into one summary |
 | `shuttle_ask` | working — answers from a file, or says the file does not answer; narrows by regexp |
@@ -57,9 +58,11 @@ are the ones spent on judgement. The server is `llama-server` from llama.cpp
 rather than Ollama because delegation needs three things Ollama does not
 expose. Structured output is reliable only with a schema the server itself
 enforces, so that a label can only be one of the labels offered and a field
-can only have the shape asked for, and a caller can size its own requests
-only if `n_ctx` per slot is stated rather than inferred. Those two are the
-whole argument; everything else Ollama does, it does well.
+can only have the shape asked for; a caller can size its own requests only if
+`n_ctx` per slot is stated rather than inferred; and a document read once can
+be asked about after a restart only if its KV cache can be written to disk
+and read back. Those three are the whole argument; everything else Ollama
+does, it does well.
 
 ## Requirements
 
@@ -142,6 +145,7 @@ The installer writes these files, and nothing else:
 | `~/.config/containers/systemd/shuttle-long.container` | the long server unit |
 | `~/.config/containers/systemd/shuttle-fast.container` | the fast server unit |
 | `~/.local/share/shuttle/models/*.gguf` | the three model files |
+| `~/.local/share/shuttle/cache/{long,fast}/` | KV slot dumps |
 | `~/.local/state/shuttle/install.log` | every command that changed the system |
 | `~/.local/state/shuttle/bench-*.json` | benchmark results with their configuration |
 | `/etc/cdi/nvidia.yaml` | the CDI specification, written as root by the `gpu` phase |
@@ -441,7 +445,7 @@ Every flag is shown by `./install.sh --help`.
 | `--fast-model REPO FILE` | the same for `shuttle-fast` |
 | `--draft-model REPO FILE` | the same for the draft model |
 | `--bench-tokens N` | prompt size for `bench`; repeat the flag for several |
-| `--prefix DIR` | where the models live |
+| `--prefix DIR` | where the models and the KV cache live |
 | `--force-distro arch\|ubuntu` | skip detection; for tests only |
 
 `HF_TOKEN` in the environment is sent to Hugging Face. It is written to a
@@ -467,8 +471,9 @@ estimate will be wrong.
 
 ## Verification and benchmarks
 
-`verify` starts both units, waits for `/health` and sends one completion to
-each server. It answers the question "is this installation working at all". The `pp` and `tg` columns it
+`verify` starts both units, waits for `/health`, sends one completion to each
+server and saves and restores a KV slot on `shuttle-long`. It answers the
+question "is this installation working at all". The `pp` and `tg` columns it
 prints come from a 32-token completion and are too short to be a measurement.
 
 `bench` is the measurement. For each server and each prompt size it builds a
@@ -597,13 +602,15 @@ trade is not acceptable.
 ## Roadmap
 
 - **M1 — delegate.** Done: see *Delegating* above.
-- **M2 — measured behaviour.** Done: see *How often it is right* above.
-  Named sessions on top of KV slot dumps were the earlier plan for M2 and
-  were dropped on measurement: restoring a 305 MiB dump of 4085 tokens saved
-  nothing over the prompt cache the server already keeps, and cost 76 KB of
-  disk per token to do it. The evaluation set replaced it, and earned the
-  place twice over by finding a missing argument and overturning the advice
-  on which server to use.
+- **M2 — measured behaviour, sessions and KV.** The evaluation set is done:
+  see *How often it is right* above. Named sessions on top of the KV slot
+  dumps are next. A first measurement appeared to rule them out, and it was
+  taken wrongly: the server was still running, so its own prompt cache held
+  the document and restoring a dump saved nothing against it. Measured across
+  a real restart, which is the case that matters, restoring the dump takes a
+  tenth of a second and the next question about the document answers in 6.7
+  seconds against 11.5 without it. The cost is 305 MiB of disk for every
+  cached document.
 - **M3 — WEFT.** Shared conventions with
   [WEFT](https://github.com/FPGArtktic/weft-mcp) so both tools can be used by
   the same agent.
