@@ -54,9 +54,13 @@ def _podman() -> str:
     return found
 
 
-def _command(file: Path, first: int, last: int) -> list[str]:
-    inside = f"{MOUNT}/{file.name}"
-    pages = [str(first), str(last)] if last else []
+def in_container(file: Path, verb: str, *rest: str) -> list[str]:
+    """What to run to have the container do one thing to one file.
+
+    The verb comes from this module and not from a caller: the image
+    takes it from a closed set, and a path that arrived as a verb is
+    the one mistake worth making impossible.
+    """
     return [
         _podman(),
         "run",
@@ -66,9 +70,15 @@ def _command(file: Path, first: int, last: int) -> list[str]:
         "-v",
         f"{file.parent}:{MOUNT}:ro",
         IMAGE,
-        inside,
-        *pages,
+        verb,
+        f"{MOUNT}/{file.name}",
+        *rest,
     ]
+
+
+def _command(file: Path, first: int, last: int) -> list[str]:
+    pages = [str(first), str(last)] if last else []
+    return in_container(file, "extract", *pages)
 
 
 def pages(path: str, first: int = 1, last: int = 0) -> list[Page]:

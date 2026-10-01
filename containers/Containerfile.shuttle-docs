@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-only
 #
-# Everything needed to get text out of a PDF, and nothing else.  The
-# container is run with --network=none and only the document's directory
-# mounted read-only, so a document that tries something cannot reach
-# anywhere and cannot write.
+# Everything needed to get text out of a PDF and units out of source,
+# and nothing else.  The container is run with --network=none and only
+# the file's directory mounted read-only, so a document that tries
+# something cannot reach anywhere and cannot write.
 FROM docker.io/library/debian:13-slim
 
 RUN apt-get update \
@@ -13,11 +13,37 @@ RUN apt-get update \
 		tesseract-ocr-eng \
 		tesseract-ocr-pol \
 		jq \
+		python3 \
+		python3-venv \
 	&& rm -rf /var/lib/apt/lists/*
 
-COPY shuttle-extract /usr/local/bin/shuttle-extract
+# The grammars live in their own environment so that nothing has to be
+# installed into the system Python, and the versions are pinned so that
+# a rebuild cuts a file the same way it did last month.  One package
+# carries all twelve languages the design asks for, Tcl and BitBake
+# included, where the per-language wheels stop at nine.
+RUN python3 -m venv /opt/grammars \
+	&& /opt/grammars/bin/pip install --no-cache-dir \
+		tree-sitter==0.26.0 \
+		tree-sitter-language-pack==1.20.0
 
-# A document is data, never a program: nothing here runs as root and the
-# entry point takes a path rather than a command.
+# The pack fetches each grammar on first use and verifies a checksum,
+# which at runtime would mean a container with no network asking for
+# one.  Fetching them here is the same rule the models follow: at
+# install time, never at runtime.  The cache is baked in and the
+# chunker is pointed at it.
+COPY warm-grammars /usr/local/bin/warm-grammars
+# The pack refuses a cache directory it does not own, so it belongs to
+# the user that will read it rather than to the user that filled it.
+RUN /opt/grammars/bin/python3 /usr/local/bin/warm-grammars \
+	&& chmod -R a+rX /opt/grammars/cache \
+	&& chown -R nobody:nogroup /opt/grammars/cache
+
+COPY shuttle-docs /usr/local/bin/shuttle-docs
+COPY shuttle-extract /usr/local/bin/shuttle-extract
+COPY shuttle-chunk /usr/local/bin/shuttle-chunk
+
+# A file is data, never a program: nothing here runs as root and the
+# entry point takes a verb from a closed set and a path.
 USER nobody
-ENTRYPOINT ["/usr/local/bin/shuttle-extract"]
+ENTRYPOINT ["/usr/local/bin/shuttle-docs"]

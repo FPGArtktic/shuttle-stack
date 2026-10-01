@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
+"""Fetch the grammars into the image, once, at build time.
+
+The list is the one the design notes give for chunk units. Asking for
+a grammar the pack does not have is a build failure on purpose: a
+language that silently fell back to blank-line blocks would look like
+a working chunker.
+"""
+
+import sys
+
+from tree_sitter_language_pack import PackConfig, configure, get_parser
+
+CACHE = "/opt/grammars/cache"
+WANTED = (
+    "bash",
+    "bitbake",
+    "c",
+    "cmake",
+    "cpp",
+    "devicetree",
+    "kconfig",
+    "make",
+    "python",
+    "systemverilog",
+    "tcl",
+    "verilog",
+    "vhdl",
+)
+
+configure(PackConfig(cache_dir=CACHE, languages=list(WANTED)))
+for name in WANTED:
+    get_parser(name)
+    print(f"warmed {name}", file=sys.stderr)

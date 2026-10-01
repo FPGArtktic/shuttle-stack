@@ -13,7 +13,16 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from . import audit, cascade, indexing, profiles, runs, sessions, tasks
+from . import (
+    audit,
+    cascade,
+    code,
+    indexing,
+    profiles,
+    runs,
+    sessions,
+    tasks,
+)
 from .backend import Backend, BackendError
 from .cascade import CascadeError
 from .config import ConfigError, load_endpoints
@@ -481,21 +490,38 @@ def session_close(session: str) -> dict[str, Any]:
 
 
 @mcp.tool(
-    description="Read a document and put its sections into the index, "
-    "so later questions can find the right part of it without anyone "
-    "naming a pattern. Sections are found by heading — a numbered "
-    "clause or a Markdown heading — and by page where a document has "
-    "no headings; the reply says which happened. Indexing the same "
-    "file again replaces its sections rather than doubling them."
+    description="Index a file so later questions can find the right "
+    "part of it without anyone naming a pattern. A PDF or text "
+    "document is cut into sections, found by heading — a numbered "
+    "clause or a Markdown heading — and by page where it has none. "
+    "Source is cut into the units its language defines: a module, an "
+    "entity, a do_install, a device tree node, a function. The reply "
+    "says which happened and how the cutting went. Indexing the same "
+    "file again replaces what it contributed rather than doubling it."
 )
 @anticipated
 def index_path(
     path: str,
     heading: str = indexing.HEADING,
 ) -> dict[str, Any]:
+    name = Path(path).name
+    if code.is_source(path):
+        cut = code.units(path)
+        lines = len(cut.units) and max(u.last_line for u in cut.units)
+        with closing(code.connect()) as db:
+            stored = code.store(db, name, cut, lines)
+        answer = {
+            "file": name,
+            "index": str(indexing.index_file()),
+            "language": cut.language,
+            "units": stored,
+            "cut_by": cut.how,
+        }
+        if cut.why:
+            answer["why"] = cut.why
+        return answer
     text = tasks.read_text(path)
     sections, how = indexing.split(text, heading)
-    name = Path(path).name
     with closing(indexing.connect()) as db:
         stored = indexing.store(db, name, sections)
     return {
@@ -527,10 +553,29 @@ def search_docs(
 
 
 @mcp.tool(
-    description="List the indexed documents, with how many sections "
-    "and pages each contributed and when it was read. Call it to find "
-    "out whether something is worth indexing again, or at all."
+    description="Search the indexed source and get back a few units "
+    "with the file and the lines each occupies. Use it for a name — a "
+    "module, a task, a function, a node — and for a question about "
+    "what something does; both halves of the index are asked and the "
+    "reply says which found each hit. The lines are the point: the "
+    "answer is a place to open, not a file to read."
+)
+@anticipated
+def search_code(
+    question: str,
+    limit: int = 3,
+    profile: str = DEFAULT_PROFILE,
+) -> dict[str, Any]:
+    return code.search(question, limit, backend(profile).count_tokens)
+
+
+@mcp.tool(
+    description="List what is indexed: documents with how many "
+    "sections and pages each contributed, source with its language "
+    "and how it was cut. Call it to find out whether something is "
+    "worth indexing again, or at all."
 )
 @anticipated
 def list_indexed() -> dict[str, Any]:
-    return indexing.indexed()
+    with closing(code.connect()) as db:
+        return indexing.indexed(db) | {"sources": code.indexed(db)["sources"]}

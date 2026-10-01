@@ -195,10 +195,20 @@ class TrimTest(unittest.TestCase):
         lengths = {len(hit["text"]) for hit in answer["hits"]}
         self.assertEqual(len(lengths), 1)
 
-    def test_an_impossible_budget_stops_at_the_floor(self) -> None:
+    def test_a_budget_the_citations_fill_drops_a_hit(self) -> None:
+        answer = indexing._trim({"index": "c"}, HITS, half, 150)
+        self.assertEqual(len(answer["hits"]), 1)
+        self.assertEqual(answer["hits_dropped"], 1)
+
+    def test_the_last_hit_is_kept_even_if_it_does_not_fit(self) -> None:
         answer = indexing._trim({"index": "c"}, HITS, half, 1)
-        for hit in answer["hits"]:
-            self.assertEqual(len(hit["text"]), indexing.MIN_EXCERPT)
+        self.assertEqual(len(answer["hits"]), 1)
+        self.assertEqual(len(answer["hits"][0]["text"]), indexing.MIN_EXCERPT)
+
+    def test_nothing_is_dropped_when_everything_fits(self) -> None:
+        answer = indexing._trim({"index": "c"}, HITS, half, 1000)
+        self.assertEqual(len(answer["hits"]), 2)
+        self.assertNotIn("hits_dropped", answer)
 
     def test_a_clause_is_reported_only_when_there_is_one(self) -> None:
         with_clause = Hit("a.pdf", 1, "4.2", "4.2 Scope", "t", 0.1, "both")

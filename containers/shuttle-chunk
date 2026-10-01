@@ -1,0 +1,524 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
+"""Source cut into the units an engineer would name it by.
+
+A file is not a useful unit of retrieval and a fixed window is worse:
+half a function tells you it exists and not what it does. Tree-sitter
+gives the units the language itself defines — a module, an entity, a
+`do_install`, a device tree node — and each is indexed with the lines
+it occupies, so a hit is a place in a file rather than a file.
+
+Runs inside the container, with no network and the source mounted
+read-only. Prints one JSON object on stdout. Source is data here, not
+a program: nothing is executed, only parsed.
+
+Where a grammar gets nothing out of a file the file is cut on blank
+lines instead, and the answer says so and why. The design notes
+expect this of the community-maintained grammars, and the test is
+what came out rather than how many error nodes the parse contains:
+measured here, tree-sitter-c leaves 84% of a preprocessor-heavy
+tclAppInit.c inside error nodes and still finds `main` and
+`Tcl_AppInit` at the right lines, which is the whole point, while
+tree-sitter-tcl fails on a 1370-line git-gui file so completely that
+the tree holds no unit at all and one blob of the entire file. The
+first is worth keeping and the second is not.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from dataclasses import asdict, dataclass
+from pathlib import Path
+
+from tree_sitter import Node
+from tree_sitter_language_pack import PackConfig, configure, get_parser
+
+# Where the grammars were put at build time. The pack would otherwise
+# fetch each one on first use, and this runs with no network.
+GRAMMARS = os.environ.get("SHUTTLE_GRAMMARS", "/opt/grammars/cache")
+
+# What the file is written in, by name or suffix. Kept here rather
+# than guessed from content: a `.v` file is Verilog in this domain and
+# Coq somewhere else, and a wrong guess is a wrong set of units.
+BY_SUFFIX = {
+    ".c": "c",
+    ".h": "c",
+    ".cc": "cpp",
+    ".cpp": "cpp",
+    ".cxx": "cpp",
+    ".hh": "cpp",
+    ".hpp": "cpp",
+    ".sh": "bash",
+    ".bash": "bash",
+    ".py": "python",
+    ".v": "verilog",
+    ".vh": "verilog",
+    ".sv": "systemverilog",
+    ".svh": "systemverilog",
+    ".vhd": "vhdl",
+    ".vhdl": "vhdl",
+    ".mk": "make",
+    ".dts": "devicetree",
+    ".dtsi": "devicetree",
+    ".tcl": "tcl",
+    ".sdc": "tcl",
+    ".xdc": "tcl",
+    ".bb": "bitbake",
+    ".bbappend": "bitbake",
+    ".bbclass": "bitbake",
+    ".inc": "bitbake",
+    ".cmake": "cmake",
+}
+BY_NAME = {
+    "Makefile": "make",
+    "makefile": "make",
+    "GNUmakefile": "make",
+    "CMakeLists.txt": "cmake",
+}
+
+# The node types that become a unit, per the chunk list in the design
+# notes. Every one of these was read off the grammar rather than
+# guessed: `design_unit` wraps VHDL's declarations and is transparent,
+# SystemVerilog calls an always block `always_construct`, and
+# bitbake's `do_install:append()` is a `function_definition` with an
+# `override` child.
+UNITS: dict[str, frozenset[str]] = {
+    "c": frozenset(
+        {
+            "function_definition",
+            "struct_specifier",
+            "union_specifier",
+            "enum_specifier",
+            "type_definition",
+            "class_specifier",
+        }
+    ),
+    "bash": frozenset({"function_definition"}),
+    "python": frozenset({"function_definition", "class_definition"}),
+    "verilog": frozenset(
+        {
+            "module_declaration",
+            "package_declaration",
+            "interface_declaration",
+            "class_declaration",
+            "always_construct",
+            "initial_construct",
+            "function_declaration",
+            "task_declaration",
+        }
+    ),
+    "vhdl": frozenset(
+        {
+            "entity_declaration",
+            "architecture_body",
+            "package_declaration",
+            "package_body",
+            "process_statement",
+            "subprogram_body",
+        }
+    ),
+    "make": frozenset({"rule", "define_directive"}),
+    "devicetree": frozenset({"node"}),
+    "kconfig": frozenset({"config", "menuconfig", "choice", "menu"}),
+    "tcl": frozenset({"procedure", "namespace"}),
+    "bitbake": frozenset(
+        {
+            "function_definition",
+            "anonymous_python_function",
+            "python_function_definition",
+        }
+    ),
+}
+UNITS["cpp"] = UNITS["c"]
+UNITS["systemverilog"] = UNITS["verilog"]
+UNITS["cmake"] = frozenset({"function_def", "macro_def"})
+
+# Nodes that hold units of their own. The container is not emitted as
+# one unit with everything in it; what comes before its first inner
+# unit is, which for a module is its ports and parameters and for a
+# recipe is SUMMARY, LICENSE, SRC_URI and DEPENDS. That keeps "what
+# are the ports of X" answerable without indexing the module twice.
+INSIDE: dict[str, frozenset[str]] = {
+    "verilog": frozenset(
+        {
+            "module_declaration",
+            "package_declaration",
+            "interface_declaration",
+            "class_declaration",
+        }
+    ),
+    "vhdl": frozenset({"architecture_body", "package_body"}),
+    "devicetree": frozenset({"node"}),
+    "kconfig": frozenset({"menu", "choice"}),
+    "tcl": frozenset({"namespace"}),
+}
+INSIDE["systemverilog"] = INSIDE["verilog"]
+
+# Constructs with nothing to be named by. An always block has no name
+# and `named` would otherwise return the first thing in its event
+# list, so "always @(posedge clk)" came out called "clk"; a VHDL
+# process has a label only sometimes and a sensitivity list always.
+# These are named by the lines they occupy, which is the citation
+# anyway.
+NAMELESS = frozenset(
+    {
+        "always_construct",
+        "initial_construct",
+        "process_statement",
+        "continuous_assign",
+    }
+)
+
+# Wrappers that carry no meaning of their own and are walked through.
+CLEAR = frozenset({"design_unit", "source_file", "translation_unit"})
+
+# Where a name is kept, across grammars. The first descendant of one
+# of these types, not crossing into a nested unit, is the name.
+NAMES = frozenset(
+    {
+        "identifier",
+        "type_identifier",
+        "simple_identifier",
+        "simple_name",
+        "simple_word",
+        "word",
+        "targets",
+        "name",
+        "field_identifier",
+        "variable_name",
+        # Kconfig names a menu by its prompt. It is last in the set
+        # only in spirit: `named` works outward from the node, so a
+        # declaration's identifier is always found before a string
+        # deeper inside it.
+        "string",
+    }
+)
+
+# A unit longer than this is cut, because the embedding model holds
+# 8192 tokens and a generated register file can be one declaration of
+# forty thousand lines.
+UNIT_CHARS = 6000
+# Below this a run of leading declarations is not worth its own unit.
+MIN_GROUP = 40
+# A parse that puts this much of the file into one unnamed group is
+# not a parse. tree-sitter-tcl returns the whole of git-gui's
+# blame.tcl that way, and a citation reading "lines 1-1370" tells a
+# reader nothing they did not have before asking.
+MAX_GROUP_SHARE = 0.9
+
+
+@dataclass
+class Unit:
+    """One citable piece of a file."""
+
+    kind: str
+    name: str
+    first_line: int
+    last_line: int
+    text: str
+
+
+def language_of(path: Path) -> str:
+    found = BY_NAME.get(path.name)
+    if found:
+        return found
+    if path.name.startswith("Kconfig"):
+        return "kconfig"
+    if path.name.startswith("Makefile"):
+        return "make"
+    return BY_SUFFIX.get(path.suffix.lower(), "")
+
+
+def text_of(node: Node) -> str:
+    return (node.text or b"").decode(errors="replace").strip()
+
+
+def last_line(node: Node) -> int:
+    """The last line the node actually occupies, counting from one.
+
+    A node that ends at column zero of the next line does not occupy
+    it. Kconfig's `config THING` ends where `config THING_SIZE`
+    begins, and taking the end row as it comes put the next entry's
+    first line inside the previous entry's text and citation.
+    """
+    row, column = node.end_point
+    if column == 0 and row > node.start_point[0]:
+        return row
+    return row + 1
+
+
+def declared(node: Node, units: frozenset[str]) -> bool:
+    """A unit, and not the keyword that happens to share its name.
+
+    Tree-sitter gives an anonymous token the text it matched as its
+    type, so Kconfig's `menu` keyword and Kconfig's menu node are both
+    "menu". Without this the keyword was emitted as a unit of its own
+    holding the word `menu`.
+    """
+    return node.is_named and node.type in units
+
+
+def named(node: Node, units: frozenset[str]) -> str:
+    """The first name inside the node, not reaching into a sub-unit.
+
+    An override comes with it: bitbake's `do_install` and
+    `do_install:append` are different tasks, and a citation naming
+    both of them `do_install` sends the reader to the wrong one.
+    """
+    if node.type in NAMELESS:
+        return f"lines {node.start_point[0] + 1}-{last_line(node)}"
+    rest = list(node.children)
+    while rest:
+        child = rest.pop(0)
+        if child.type in NAMES:
+            found = text_of(child).strip('"')
+            after = child.next_sibling
+            if after is not None and after.type == "override":
+                found += text_of(after)
+            return found
+        if child.type not in units:
+            rest.extend(child.children)
+    return ""
+
+
+def holds_unit(node: Node, units: frozenset[str]) -> bool:
+    """Whether a unit is anywhere below this node."""
+    return any(
+        declared(child, units) or holds_unit(child, units)
+        for child in node.children
+    )
+
+
+def errors(node: Node) -> int:
+    """How many characters sit inside an error or a missing token."""
+    if node.type == "ERROR" or node.is_missing:
+        return node.end_byte - node.start_byte
+    if not node.has_error:
+        return 0
+    return sum(errors(child) for child in node.children)
+
+
+def cut(
+    lines: list[str], first: int, last: int, limit: int = UNIT_CHARS
+) -> list[tuple[int, int, str]]:
+    """A line range in pieces, each with the lines it really holds.
+
+    Cutting by characters and keeping the original range made every
+    piece claim the same lines, so a 600-character excerpt was cited
+    as lines 1 to 1370. A piece is worth citing only if it can say
+    where it starts.
+    """
+    out: list[tuple[int, int, str]] = []
+    held: list[str] = []
+    start = first
+    room = 0
+    for at in range(first, last + 1):
+        line = lines[at - 1] if at - 1 < len(lines) else ""
+        if held and room + len(line) + 1 > limit:
+            out.append((start, at - 1, "\n".join(held)))
+            held, room, start = [], 0, at
+        held.append(line)
+        room += len(line) + 1
+    if held:
+        out.append((start, last, "\n".join(held)))
+    return out or [(first, last, "")]
+
+
+def body(lines: list[str], node: Node) -> str:
+    return "\n".join(lines[node.start_point[0] : last_line(node)])
+
+
+def collect(
+    node: Node, lines: list[str], language: str, out: list[Unit]
+) -> None:
+    """Walk one level, emitting units and grouping what is between.
+
+    A run of nodes that are no unit of their own becomes one: in C
+    that is the includes and the macros, in a recipe the variables the
+    design notes call the recipe header, in a constraint file the
+    commands between two procs.
+    """
+    units = UNITS.get(language, frozenset())
+    inside = INSIDE.get(language, frozenset())
+    held: list[Node] = []
+
+    def flush() -> None:
+        if not held:
+            return
+        first, last = held[0].start_point[0], last_line(held[-1]) - 1
+        text = "\n".join(lines[first : last + 1])
+        held.clear()
+        if len(text.strip()) < MIN_GROUP:
+            return
+        for begins, ends, piece in cut(lines, first + 1, last + 1):
+            out.append(
+                Unit(
+                    "declarations",
+                    f"lines {begins}-{ends}",
+                    begins,
+                    ends,
+                    piece,
+                )
+            )
+
+    for child in node.children:
+        if child.type in CLEAR or (
+            not declared(child, units) and holds_unit(child, units)
+        ):
+            flush()
+            collect(child, lines, language, out)
+            continue
+        if not declared(child, units):
+            if text_of(child):
+                held.append(child)
+            elif holds_unit(child, units):
+                flush()
+                collect(child, lines, language, out)
+            continue
+        flush()
+        name = named(child, units)
+        if child.type in inside:
+            held_in: list[Unit] = []
+            collect(child, lines, language, held_in)
+            own = [u for u in held_in if u.kind != "declarations"]
+            if own:
+                head = [u for u in held_in if u.kind == "declarations"]
+                first = child.start_point[0] + 1
+                for one in head[:1]:
+                    out.append(
+                        Unit(
+                            f"{child.type} header",
+                            name or one.name,
+                            first,
+                            one.last_line,
+                            one.text,
+                        )
+                    )
+                out.extend(
+                    Unit(
+                        u.kind,
+                        ".".join(part for part in (name, u.name) if part),
+                        u.first_line,
+                        u.last_line,
+                        u.text,
+                    )
+                    for u in own
+                )
+                continue
+        pieces = cut(lines, child.start_point[0] + 1, last_line(child))
+        for at, (begins, ends, piece) in enumerate(pieces):
+            out.append(
+                Unit(
+                    child.type,
+                    name + (f" lines {begins}-{ends}" if at else ""),
+                    begins,
+                    ends,
+                    piece,
+                )
+            )
+    flush()
+
+
+def by_line(lines: list[str]) -> list[Unit]:
+    """The fallback: blank-line blocks, with the lines they came from."""
+    out: list[Unit] = []
+    held = False
+    start = 1
+    for number, line in enumerate(lines, start=1):
+        if line.strip():
+            if not held:
+                start, held = number, True
+            continue
+        if held:
+            for begins, ends, piece in cut(lines, start, number - 1):
+                out.append(
+                    Unit("block", f"lines {begins}-{ends}", begins, ends,
+                         piece)
+                )
+            held = False
+    if held:
+        for begins, ends, piece in cut(lines, start, len(lines)):
+            out.append(
+                Unit("block", f"lines {begins}-{ends}", begins, ends, piece)
+            )
+    return out
+
+
+def chunk(path: Path) -> dict[str, object]:
+    language = language_of(path)
+    data = path.read_bytes()
+    lines = data.decode(errors="replace").splitlines()
+    if not language:
+        return {
+            "file": path.name,
+            "language": "",
+            "how": "lines",
+            "why": "no grammar for this name or suffix",
+            "error_share": 0.0,
+            "units": [asdict(u) for u in by_line(lines)],
+        }
+    tree = get_parser(language).parse(data)
+    share = round(errors(tree.root_node) / max(1, len(data)), 3)
+    units: list[Unit] = []
+    collect(tree.root_node, lines, language, units)
+    why = useless(units, len(lines), language)
+    if why:
+        return {
+            "file": path.name,
+            "language": language,
+            "how": "lines",
+            "why": why,
+            "error_share": share,
+            "units": [asdict(u) for u in by_line(lines)],
+        }
+    return {
+        "file": path.name,
+        "language": language,
+        "how": "tree-sitter",
+        "error_share": share,
+        "units": [asdict(u) for u in units],
+    }
+
+
+def useless(units: list[Unit], lines: int, language: str) -> str:
+    """Why the tree is not worth using, or the empty string.
+
+    Error nodes are not the test. A grammar that misses a construct
+    still puts the functions around it in the right place, and a
+    grammar that misses the language puts the file in one nameless
+    group; the second is the one to refuse.
+    """
+    if not units:
+        return f"the {language} grammar found no units in the file"
+    if any(unit.kind != "declarations" for unit in units):
+        return ""
+    # The share before cutting, not after: a thousand-line group split
+    # into six still means the grammar named nothing, and judging the
+    # pieces was how blame.tcl passed a test written to catch it.
+    held = sum(unit.last_line - unit.first_line + 1 for unit in units)
+    if lines and held / lines > MAX_GROUP_SHARE:
+        return (
+            f"the {language} grammar named nothing in the file and left "
+            f"{held} of its {lines} lines in unnamed pieces"
+        )
+    return ""
+
+
+def main(argv: list[str]) -> int:
+    configure(PackConfig(cache_dir=GRAMMARS))
+    if len(argv) != 2:
+        print("usage: shuttle-chunk FILE", file=sys.stderr)
+        return 2
+    path = Path(argv[1])
+    if not path.is_file():
+        print(f"cannot read {path}", file=sys.stderr)
+        return 2
+    json.dump(chunk(path), sys.stdout)
+    sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

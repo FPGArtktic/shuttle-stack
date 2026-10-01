@@ -642,23 +642,35 @@ def _vectors(
 def _trim(
     answer: dict[str, Any], hits: list[Hit], count: Count, budget: int
 ) -> dict[str, Any]:
-    """Shorten the excerpts until the whole answer fits the budget.
+    """Fit the whole answer into the budget, and say what it cost.
 
     The whole answer, not the hits alone: the fields around them cost
     tokens too, and measuring only the hits returned 315 against a
     budget of 300.
 
-    Evenly across the hits, because a long first one crowding out the
-    rest would hide the second-best section behind the best.
+    Shortened evenly across the hits, because a long first one
+    crowding out the rest would hide the second-best section behind
+    the best. When even the shortest excerpts do not fit, the last
+    hit goes rather than the budget: three source units cost 277
+    tokens in citations alone before a character of their text, so
+    holding three of them would have meant thirty characters each,
+    and two units somebody can read beat three nobody can.
     """
-    room = EXCERPT_CHARS
+    kept = list(hits)
     while True:
-        shortened = answer | {"hits": [hit.report(room) for hit in hits]}
-        if count(json.dumps(shortened, ensure_ascii=False)) <= budget:
+        room = EXCERPT_CHARS
+        while True:
+            shortened = answer | {"hits": [hit.report(room) for hit in kept]}
+            if len(kept) < len(hits):
+                shortened["hits_dropped"] = len(hits) - len(kept)
+            if count(json.dumps(shortened, ensure_ascii=False)) <= budget:
+                return shortened
+            if room <= MIN_EXCERPT:
+                break
+            room = max(MIN_EXCERPT, room * 2 // 3)
+        if len(kept) <= 1:
             return shortened
-        if room <= MIN_EXCERPT:
-            return shortened
-        room = max(MIN_EXCERPT, room * 2 // 3)
+        kept.pop()
 
 
 def stamp(db: sqlite3.Connection) -> str:

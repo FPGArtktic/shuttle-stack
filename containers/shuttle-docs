@@ -1,0 +1,21 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# The container's one entry point.  A verb from a closed set and a path:
+# the path is data and is never run, and a verb that is not in the list
+# is refused rather than passed to a shell.
+
+set -eu
+
+verb=${1:-}
+shift 2> /dev/null || true
+
+case $verb in
+extract)
+	exec /usr/local/bin/shuttle-extract "$@" ;;
+chunk)
+	exec /opt/grammars/bin/python3 /usr/local/bin/shuttle-chunk "$@" ;;
+*)
+	echo "usage: extract FILE.pdf [first] [last] | chunk FILE" >&2
+	exit 2 ;;
+esac
