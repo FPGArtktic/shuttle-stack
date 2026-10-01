@@ -13,11 +13,11 @@ from shuttle_delegate.server import anticipated, backend, mcp
 from shuttle_delegate.tasks import TaskError
 
 EXPECTED = {
-    "shuttle_status",
-    "shuttle_summarise",
-    "shuttle_ask",
-    "shuttle_classify",
-    "shuttle_extract",
+    "status",
+    "summarize_file",
+    "ask_file",
+    "classify_file",
+    "extract",
 }
 
 
@@ -73,7 +73,7 @@ class ToolErrorTest(unittest.TestCase):
         with self.assertRaises(ToolError) as caught:
             asyncio.run(
                 mcp.call_tool(
-                    "shuttle_ask",
+                    "ask_file",
                     {"path": "/nonexistent/file.txt", "question": "what?"},
                 )
             )
@@ -81,13 +81,13 @@ class ToolErrorTest(unittest.TestCase):
 
     def test_ask_offers_a_pattern_and_a_context(self) -> None:
         tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
-        fields = tools["shuttle_ask"].input_schema["properties"]
+        fields = tools["ask_file"].input_schema["properties"]
         self.assertIn("pattern", fields)
         self.assertIn("context", fields)
 
     def test_the_tools_take_a_profile_not_a_server(self) -> None:
         for tool in asyncio.run(mcp.list_tools()):
-            if tool.name == "shuttle_status":
+            if tool.name == "status":
                 continue
             with self.subTest(tool=tool.name):
                 fields = tool.input_schema["properties"]

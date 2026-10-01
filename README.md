@@ -28,11 +28,11 @@ and M2 the evaluation that says how far either can be trusted.
 | Model download | working — size and sha256 from the Hugging Face tree API, resumable |
 | Benchmarks | working — `bench` writes JSON with the configuration it measured |
 | KV slot dumps | working — a document's cache survives a restart; 1.7x on the next question, 305 MiB per document |
-| `shuttle_status` | working — which servers answer, which model each holds, how large its context is |
-| `shuttle_summarise` | working — folds a file larger than the context into one summary |
-| `shuttle_ask` | working — answers from a file, or says the file does not answer; narrows by regexp |
-| `shuttle_classify` | working — labels enforced by a schema, votes across parts, reports agreement |
-| `shuttle_extract` | working — fields enforced by a schema, narrows by regexp; refuses a file that needs more than one part |
+| `status` | working — which servers answer, which model each holds, how large its context is |
+| `summarize_file` | working — folds a file larger than the context into one summary |
+| `ask_file` | working — answers from a file, or says the file does not answer; narrows by regexp |
+| `classify_file` | working — labels enforced by a schema, votes across parts, reports agreement |
+| `extract` | working — fields enforced by a schema, narrows by regexp; refuses a file that needs more than one part |
 | Evaluation set | working — twenty cases with known answers, two of them refusals; 20/20 on the long server, 18/20 on the fast one |
 | Profiles | working — `long`, `fast`, `extract`; endpoint, sampling and report limit, overridable in `profiles.toml` |
 | Report limit and run files | working — a thousand tokens back, the whole output to `.shuttle/runs/<id>.md` |
@@ -211,9 +211,9 @@ Two local llama-servers are reachable through the `shuttle` MCP server.
 Use them to keep bulk text out of context, not to avoid deciding things.
 
 - Before reading a long file only to establish a fact from it, call
-  `shuttle_ask` with a `pattern` that lands on the passage.
+  `ask_file` with a `pattern` that lands on the passage.
 - To pull known fields out of a file, or the same fields out of many,
-  call `shuttle_extract` with a JSON schema.
+  call `extract` with a JSON schema.
 - Find things yourself with grep; hand the local model a region, never
   a search. It is worse at searching and the search is free.
 - Pass a path. Never paste file contents into a tool call.
@@ -239,10 +239,10 @@ and the instructions repeat it.
 
 | Tool | Takes | Returns |
 |---|---|---|
-| `shuttle_status` | nothing | which servers answer, their models and contexts |
-| `shuttle_summarise` | path, words, focus, server | one summary, however many parts the file needed |
-| `shuttle_classify` | path, labels, question, server | one of the labels, the vote and the agreement |
-| `shuttle_extract` | path, JSON schema, instructions, server | the fields, in the shape asked for |
+| `status` | nothing | which servers answer, their models and contexts |
+| `summarize_file` | path, words, focus, server | one summary, however many parts the file needed |
+| `classify_file` | path, labels, question, server | one of the labels, the vote and the agreement |
+| `extract` | path, JSON schema, instructions, server | the fields, in the shape asked for |
 
 Labels and field shapes are enforced by llama-server through a response
 format, so an answer is valid by construction rather than by parsing hope.
@@ -271,9 +271,9 @@ and how much of the answer comes back. Every tool takes one.
 
 | Profile | Server | Temperature | Used by default for |
 |---|---|---|---|
-| `long` | `shuttle-long` | 0.2 | `shuttle_summarise`, `shuttle_ask` |
+| `long` | `shuttle-long` | 0.2 | `summarize_file`, `ask_file` |
 | `fast` | `shuttle-fast` | 0.2 | nothing; ask for it when concurrency matters |
-| `extract` | `shuttle-long` | 0.0 | `shuttle_classify`, `shuttle_extract` |
+| `extract` | `shuttle-long` | 0.0 | `classify_file`, `extract` |
 
 Schema-bound work is not sampled: there is one right shape for the answer
 and temperature can only move it away from that.
@@ -308,7 +308,7 @@ none.
 Every call appends one line to `.shuttle/audit.jsonl`, whether it answered or
 failed, with the arguments, the seconds, the tokens spent and the run file.
 
-`shuttle_ask` also reports `quotes` and `quotes_grounded`. Every quoted or
+`ask_file` also reports `quotes` and `quotes_grounded`. Every quoted or
 backticked span in the answer is compared against the text the model was
 shown, and any that is not there is listed in `quotes_not_in_source`. This
 costs nothing and catches the worst failure available: on the first day of
@@ -331,9 +331,9 @@ deciding what matters. Keep the choosing, hand over the reading.
 - **Ask several questions of one region rather than one question of a file.**
   The server keeps the cache of a prefix it has already read, so the second
   question about the same text is about twice as fast.
-- **Prefer `shuttle_extract` and `shuttle_classify` when you know the shape of
+- **Prefer `extract` and `classify_file` when you know the shape of
   the answer.** The server is held to your schema, so the reply cannot be a
-  label you did not offer or a field you did not ask for. `shuttle_ask` is
+  label you did not offer or a field you did not ask for. `ask_file` is
   free-form and carries no such guarantee.
 - **Do not ask about anything the file does not contain.** Asked what Quadlet
   is, with no text to read, `shuttle-fast` answered that it is a character
@@ -346,7 +346,7 @@ deciding what matters. Keep the choosing, hand over the reading.
   is both better and faster; see the evaluation below.
 - **Read `local_tokens` in every reply.** It is the work the machine did, and
   therefore the work your context did not have to hold.
-- **Read `quotes_not_in_source` when `shuttle_ask` answers.** A quotation the
+- **Read `quotes_not_in_source` when `ask_file` answers.** A quotation the
   source does not contain means the answer was reconstructed rather than
   read, and nothing else in the reply is more trustworthy than that.
 - **Read the run file when the report was cut.** `report_cut` says when the

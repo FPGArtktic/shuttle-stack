@@ -44,7 +44,7 @@ shuttle-long holds the larger model and answers better; shuttle-fast
 holds a smaller one and answers sooner. Every answer reports the tokens
 the local servers spent, which are the tokens you did not.
 
-Give shuttle_ask a `pattern` whenever you can name what you are looking
+Give ask_file a `pattern` whenever you can name what you are looking
 for. It does not change what the model can answer, but it changes the
 price: the same question over one matching function instead of a whole
 35 KB file costs 408 tokens rather than 13079, and three seconds rather
@@ -151,7 +151,7 @@ def _describe(server: Backend) -> dict:
     "fails, or to choose between the two servers."
 )
 @anticipated
-def shuttle_status() -> dict:
+def status() -> dict:
     try:
         return {"servers": [_describe(b) for b in servers().values()]}
     except ConfigError as error:
@@ -168,7 +168,7 @@ def shuttle_status() -> dict:
 )
 @anticipated
 @recorded
-def shuttle_summarise(
+def summarize_file(
     path: str,
     words: int = 200,
     focus: str = "",
@@ -193,7 +193,7 @@ def shuttle_summarise(
 )
 @anticipated
 @recorded
-def shuttle_ask(
+def ask_file(
     path: str,
     question: str,
     pattern: str = "",
@@ -220,7 +220,7 @@ def shuttle_ask(
 )
 @anticipated
 @recorded
-def shuttle_classify(
+def classify_file(
     path: str,
     labels: list[str],
     question: str = "",
@@ -242,7 +242,7 @@ def shuttle_classify(
 )
 @anticipated
 @recorded
-def shuttle_extract(
+def extract(
     path: str,
     schema: dict,
     instructions: str = "",

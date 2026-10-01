@@ -62,7 +62,7 @@ class ReportTest(unittest.TestCase):
     def test_the_whole_answer_reaches_the_file(self) -> None:
         whole = "sentence. " * 2000
         result = runs.report(
-            count, "shuttle_ask", {"path": "x"}, {"answer": whole}
+            count, "ask_file", {"path": "x"}, {"answer": whole}
         )
         self.assertTrue(result["report_cut"])
         self.assertLess(len(result["answer"]), len(whole))
@@ -72,7 +72,7 @@ class ReportTest(unittest.TestCase):
     def test_the_request_is_kept_beside_the_result(self) -> None:
         runs.report(
             count,
-            "shuttle_ask",
+            "ask_file",
             {"path": "x", "question": "why?"},
             {"answer": "because"},
         )
@@ -82,13 +82,13 @@ class ReportTest(unittest.TestCase):
 
     def test_structured_fields_are_not_cut(self) -> None:
         fields = {"a": "b" * 10000}
-        result = runs.report(count, "shuttle_extract", {}, {"fields": fields})
+        result = runs.report(count, "extract", {}, {"fields": fields})
         self.assertEqual(result["fields"], fields)
         self.assertFalse(result["report_cut"])
 
     def test_two_runs_do_not_share_a_file(self) -> None:
         for _ in range(2):
-            runs.report(count, "shuttle_ask", {}, {"answer": "a"})
+            runs.report(count, "ask_file", {}, {"answer": "a"})
         self.assertEqual(
             len(list((Path(self.dir.name) / "runs").glob("*.md"))), 2
         )
@@ -105,19 +105,19 @@ class AuditTest(unittest.TestCase):
         return Path(self.dir.name) / audit.NAME
 
     def test_every_call_is_one_line_of_json(self) -> None:
-        audit.log({"tool": "shuttle_ask", "ok": True})
-        audit.log({"tool": "shuttle_extract", "ok": False})
+        audit.log({"tool": "ask_file", "ok": True})
+        audit.log({"tool": "extract", "ok": False})
         lines = self.path().read_text().splitlines()
         self.assertEqual(len(lines), 2)
-        self.assertEqual(json.loads(lines[1])["tool"], "shuttle_extract")
+        self.assertEqual(json.loads(lines[1])["tool"], "extract")
 
     def test_the_time_is_recorded_without_being_asked(self) -> None:
-        audit.log({"tool": "shuttle_ask"})
+        audit.log({"tool": "ask_file"})
         self.assertIn("at", json.loads(self.path().read_text()))
 
     def test_an_unwritable_log_does_not_break_the_answer(self) -> None:
         os.environ["SHUTTLE_HOME"] = "/proc/nowhere/at/all"
-        audit.log({"tool": "shuttle_ask"})
+        audit.log({"tool": "ask_file"})
 
 
 if __name__ == "__main__":
