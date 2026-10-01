@@ -2,3 +2,4 @@
 .venv/
 __pycache__/
 *.egg-info/
+project_info.txt.shuttle/

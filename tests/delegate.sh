@@ -21,12 +21,13 @@ if [[ -n ${SHUTTLE_PYTHON:-} ]]; then
 	pin=(--python "$SHUTTLE_PYTHON")
 fi
 
-# The tests must not see this machine's installation: one that reads
-# ~/.config/shuttle/stack.env passes for a developer who has the stack
-# and fails on a runner that does not.  XDG_CONFIG_HOME points at an
-# empty directory so neither can happen.
+# The tests must neither read this machine's installation nor write to
+# the tree they run in.  One that reads ~/.config/shuttle/stack.env
+# passes for a developer who has the stack and fails on a runner that
+# does not; one that reaches the audit log leaves a file behind, which
+# in the scratch worktree of tests/commits.sh stops the next checkout.
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 
-XDG_CONFIG_HOME=$scratch \
+XDG_CONFIG_HOME=$scratch SHUTTLE_HOME=$scratch/state \
 	uv run --quiet "${pin[@]}" python -m unittest discover -s tests -t . "$@"

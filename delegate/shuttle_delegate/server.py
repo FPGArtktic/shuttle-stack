@@ -4,13 +4,14 @@
 from __future__ import annotations
 
 import functools
+import time
 from collections.abc import Callable
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from . import tasks
+from . import audit, runs, tasks
 from .backend import Backend, BackendError
 from .config import ROLES, ConfigError, load_endpoints
 from .retrieval import PatternError
@@ -73,6 +74,45 @@ def anticipated(fn: Callable[..., Any]) -> Callable[..., Any]:
     return wrapper
 
 
+# The caller gets a report under a hard token limit and the name of the
+# file holding the rest; every call leaves a line in the audit log,
+# whether it answered or failed.
+def recorded(fn: Callable[..., dict]) -> Callable[..., dict]:
+    @functools.wraps(fn)
+    def wrapper(**kwargs: Any) -> dict:
+        role = kwargs.get("server", "long")
+        started = time.time()
+        try:
+            result = fn(**kwargs)
+        except Exception as error:
+            audit.log(
+                {
+                    "tool": fn.__name__,
+                    "args": kwargs,
+                    "ok": False,
+                    "seconds": round(time.time() - started, 2),
+                    "error": str(error),
+                }
+            )
+            raise
+        counted = runs.report(
+            backend(role).count_tokens, fn.__name__, kwargs, result
+        )
+        audit.log(
+            {
+                "tool": fn.__name__,
+                "args": kwargs,
+                "ok": True,
+                "seconds": round(time.time() - started, 2),
+                "local_tokens": result.get("local_tokens"),
+                "run": counted["run"],
+            }
+        )
+        return counted
+
+    return wrapper
+
+
 def backend(role: str) -> Backend:
     if role not in ROLES:
         raise ValueError(f"unknown server '{role}'; use one of {ROLES}")
@@ -118,6 +158,7 @@ def shuttle_status() -> dict:
     "quality."
 )
 @anticipated
+@recorded
 def shuttle_summarise(
     path: str,
     words: int = 200,
@@ -142,6 +183,7 @@ def shuttle_summarise(
     "answers, the reply says so rather than inventing one."
 )
 @anticipated
+@recorded
 def shuttle_ask(
     path: str,
     question: str,
@@ -168,6 +210,7 @@ def shuttle_ask(
     "shuttle-fast is usually enough for this."
 )
 @anticipated
+@recorded
 def shuttle_classify(
     path: str,
     labels: list[str],
@@ -189,6 +232,7 @@ def shuttle_classify(
     "large is refused rather than guessed at."
 )
 @anticipated
+@recorded
 def shuttle_extract(
     path: str,
     schema: dict,
