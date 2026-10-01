@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Example only: install.sh quadlets writes the real unit.
+[Unit]
+Description=SHUTTLE fast llama-server
+
+[Container]
+Image=ghcr.io/ggml-org/llama.cpp:server
+ContainerName=shuttle-fast
+Network=shuttle.network:ip=10.89.7.11
+EnvironmentFile=/home/USER/.config/shuttle/fast.env
+Volume=/home/USER/.local/share/shuttle/models:/models:ro,z
+Volume=/home/USER/.local/share/shuttle/cache/fast:/cache:rw,Z
+Exec=--slot-save-path /cache --flash-attn on --no-webui
+HealthCmd=curl -fsS -o /dev/null http://127.0.0.1:8080/health
+HealthInterval=30s
+HealthStartPeriod=900s
+PublishPort=127.0.0.1:8082:8080
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=900
+
+[Install]
+WantedBy=default.target

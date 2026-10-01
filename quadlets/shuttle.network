@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Example only: install.sh quadlets writes the real unit.
+[Unit]
+Description=SHUTTLE internal network (no egress)
+
+[Network]
+NetworkName=shuttle
+Subnet=10.89.7.0/24
+Gateway=10.89.7.1
+Internal=true

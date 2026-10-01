@@ -57,6 +57,39 @@ check_mcp_json()
 	printf 'smoke: .mcp.json: ok\n'
 }
 
+# The committed units are examples, so nothing starts them and a typo
+# in one would be found by whoever read them for the shape rather than
+# by the installer.  These are the keys the design asks for.
+check_quadlets()
+{
+	local file key
+
+	if [[ ! -d quadlets ]]; then
+		return 0
+	fi
+	for key in NetworkName Subnet Gateway Internal=true; do
+		grep -q "^$key" quadlets/shuttle.network ||
+			fail "quadlets/shuttle.network lacks $key"
+	done
+	for file in quadlets/shuttle-*.container; do
+		for key in Image ContainerName Network EnvironmentFile \
+				HealthCmd Restart=on-failure \
+				TimeoutStartSec WantedBy=default.target; do
+			grep -q "^$key" "$file" ||
+				fail "$file lacks $key"
+		done
+		grep -q '^Volume=.*:/models:ro' "$file" ||
+			fail "$file does not mount the models read-only"
+	done
+	grep -q '^AddDevice=nvidia.com/gpu=all' \
+		quadlets/shuttle-long.container ||
+		fail "the long example does not claim the GPU"
+	if grep -q '^AddDevice' quadlets/shuttle-fast.container; then
+		fail "the fast example claims a device; fast is CPU only"
+	fi
+	printf 'smoke: quadlet examples: ok\n'
+}
+
 check_dry_run()
 {
 	local distro=$1 out
@@ -79,6 +112,7 @@ main()
 	printf 'smoke: syntax and shellcheck: ok\n'
 	check_python
 	check_mcp_json
+	check_quadlets
 	for distro in ubuntu arch; do
 		check_dry_run "$distro"
 	done
