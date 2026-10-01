@@ -39,6 +39,7 @@ and M2 the evaluation that says how far either can be trusted.
 | Best-of-n | working — a sample failing its verifier is drawn again, warmer; 1.00 attempts per case over the evaluation set |
 | Document index | working — one SQLite file, BM25 and vectors fused, sections cited by file, page and clause, answers under 300 tokens |
 | Source index | working — Tree-sitter units for fourteen languages, cited by file and line range; falls back to blank-line blocks and says why |
+| Bounded agents | working — `agent_start` runs a preset until a verifier agrees or a budget is spent; a preset with no verifier is refused |
 | Code graph | working — includes, calls, instantiation, inherit, DEPENDS and every variable assignment, read off the parse; `find_references` answers with file:line and no model |
 | Network audit | working — `install.sh audit` proves no egress with two probes, and checks what each server publishes and where |
 | Audit log rotation | working — eight megabytes a generation, four kept, rotated before the write |
@@ -309,6 +310,8 @@ and the instructions repeat it.
 | `search_docs` | a question, limit | a few sections with file, page and heading, under 300 tokens |
 | `search_code` | a question, limit | a few units with file and line range, under 300 tokens |
 | `find_references` | a name, a relation, limit | every file:line that names it, with no model asked |
+| `agent_start` | a task, a preset | the report, which budget stopped it, and the directory holding every step |
+| `agent_presets` | nothing | the presets, with each one's budget and what verifies it |
 | `grade_run` | a run, a verdict, a correction | the verdict recorded, and how many cases the set now holds |
 | `list_indexed` | nothing | the documents with their sections and pages, the source files with their language, the files with kept answers |
 | `session_open` | path, words, pattern, until, context, profile | a session id, the document read and cached |
@@ -1171,11 +1174,10 @@ alongside from M2. M8 is independent of all of it.
   the servers through those same loopback ports from the host, so closing
   them would cut it off; the token assumes an HTTP delegate where this one
   speaks stdio, on which a bearer token means nothing.
-- **M5 — code graphs and constrained agents.** Partly done: the graph and
-  the scout above answer the first of the milestone's three criteria. Still
-  to come: the ReAct loop, each run in a container with `--network=none` and
-  only the task directory mounted, driven by a preset that names the command
-  which verifies the result, and the two-hop symbol expansion.
+- **M5 — code graphs and constrained agents.** Mostly done: the graph, the
+  scout, and the bounded loop above meet two of the milestone's three
+  criteria. Still to come: `doc-extract` against five reference documents,
+  which needs the reference JSON, and the two-hop symbol expansion.
 - **M6 — batch work.** Partly done: the timer, the watched directories, the
   overnight indexing of both documents and source, a morning report short
   enough to read in a thousand tokens, and the answer cache — narrower than
@@ -1191,6 +1193,69 @@ alongside from M2. M8 is independent of all of it.
   second machine, for the reason under *The cluster* below. The backend swap
   is dropped: the delegate needs five llama-server endpoints and another
   server offers one of them.
+
+## Agents, and the one rule they are built around
+
+A loop that decides for itself when it has finished reports success. An 8B
+model is confident in exactly the way that makes that dangerous, so a preset
+without a verifier is refused rather than run — the design's own rule, and
+the reason this is a short list of presets rather than a general agent.
+
+Three kinds of verifier count, and each can refuse on its own: a schema the
+report has to satisfy, a grounding check that every citation came from a tool
+answer, and a command that has to exit zero. `agent_presets` says which a
+preset has.
+
+```
+repo-scout    steps=10  a report schema; grounding places
+doc-qa        steps=8   a report schema; grounding cited
+verify-loop   steps=14  bash -n
+```
+
+**`verify-loop` on five seeded defects.** Five shell scripts, one syntax
+error each, `bash -n` as the verifier, which M5 asks to converge on at least
+three of:
+
+```
+one.sh    verified  4 steps   9s        four.sh   verified  4 steps   9s
+two.sh    verified  4 steps   8s        five.sh   verified  4 steps  11s
+three.sh  verified  4 steps   9s
+```
+
+Five of five, and `bash -n` passes on every file it left. What that does not
+mean: `four.sh` came back with its `case` rewritten as an `if/elif`, and
+`two.sh` lost its shebang. Both pass the verifier, because a syntax verifier
+checks syntax. **A verifier gates what it checks and nothing else**, which is
+the thing to remember before putting one in a preset.
+
+**`repo-scout` on the milestone's two questions.** Every place it reports is
+correct; on the variable question it found 8 of the 9 assignments the index
+holds, so it is sound rather than exhaustive.
+
+```
+who instantiates clk_tick     verified  4 steps  10s
+                              counter_top.sv:97, counter_top.sv:122
+which file assigns RDEPENDS   verified  4 steps  13s
+                              openvswitch.inc:16, :19, :20, :21, :22
+                              openvswitch_git.bb:7, :107, :108
+```
+
+**Two things that mattered more than the loop.** Putting the report schema
+inside the `finish` tool, so the shape is held by the decoding grammar rather
+than only checked afterwards: before that, one run invented its own field
+names and another returned places as objects, and both spent their whole
+budget being refused; after, a run takes four steps instead of seven to ten.
+And accepting a tool call the model writes into its message instead of
+calling — refusing that is not integrity, it is a formatting argument the loop
+loses, and it cost six of ten steps on a run that already had the answer. The
+transcript records which channel was used.
+
+Bounded three ways, because each runs out first in a different failure: steps
+for a model asking for the same tool forever, tokens for one writing an essay
+every step, seconds for a verifier that hangs. The reply says which. The
+verifier itself runs in its own container with no network and the output
+directory read-only, because a verifier command is arbitrary code out of a
+configuration file.
 
 ## The cluster, and why localhost is the wrong place to measure it
 
