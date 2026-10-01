@@ -1192,6 +1192,7 @@ render_stack_env()
 		name=SHUTTLE_${role^^}
 		printf '%s_URL=http://shuttle-%s:8080\n' "$name" "$role"
 		printf '%s_IP=%s\n' "$name" "${SERVER_IP[$role]}"
+		printf '%s_CACHE=%s\n' "$name" "$cache_dir/$role"
 		if (( expose_direct )); then
 			printf '%s_DIRECT_PORT=%s\n' "$name" \
 				"${SERVER_PORT[$role]}"
