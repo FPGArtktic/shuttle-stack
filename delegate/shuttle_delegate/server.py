@@ -695,6 +695,29 @@ def find_references(
 
 
 @mcp.tool(
+    description="Expand a symbol one step further than "
+    "find_references: where the name is defined, with the head of "
+    "that definition — for HDL the ports and parameters, for C the "
+    "signature — every place that names it, and what the defining "
+    "and naming units refer to in turn, each with its own file:line. "
+    "The second hop is what answers a question whose subject is not "
+    "the name itself: which layer overrides a variable is the recipe "
+    "assigning it and what that recipe inherits. Still a lookup, not "
+    "a search. A defined_at of null means the index holds no "
+    "definition of that name, which is what a call into a library "
+    "looks like. Pass hops=1 for the name alone."
+)
+@anticipated
+def expand_symbol(
+    name: str,
+    hops: int = 2,
+    limit: int = code.MAX_REACHED,
+) -> dict[str, Any]:
+    with closing(code.connect()) as db:
+        return code.expand(db, name, hops, limit)
+
+
+@mcp.tool(
     description="List what is indexed: documents with how many "
     "sections and pages each contributed, source with its language "
     "and how it was cut, and the files that have kept answers. Call "

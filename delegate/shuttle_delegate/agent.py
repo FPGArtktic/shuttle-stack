@@ -200,6 +200,24 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "required": ["name"],
         },
     },
+    "expand_symbol": {
+        "description": "One step further than find_references: where a "
+        "name is defined, who names it, and what those places refer to "
+        "in turn, each with a file:line. Use it when the answer is one "
+        "hop past the name itself.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "hops": {
+                    "type": "integer",
+                    "description": "1 for the name alone, 2 to follow "
+                    "what it reaches. Default 2.",
+                },
+            },
+            "required": ["name"],
+        },
+    },
     "read_lines": {
         "description": "Read a range of lines from an indexed source "
         "file. Name the file as find_references reported it.",
@@ -284,11 +302,18 @@ BUILT_IN: dict[str, Preset] = {
     # a file:line it reports has to be one the index holds.
     "repo-scout": Preset(
         name="repo-scout",
-        tools=("find_references", "search_code", "read_lines", "finish"),
+        tools=(
+            "find_references",
+            "expand_symbol",
+            "search_code",
+            "read_lines",
+            "finish",
+        ),
         task="Answer the question about the indexed source. Use "
-        "find_references for a name and read_lines to see the code "
-        "around it. Every place you name must be a file and line the "
-        "tools gave you; do not guess one.",
+        "find_references for a name, expand_symbol when the answer is "
+        "a step past the name, and read_lines to see the code around "
+        "it. Every place you name must be a file and line the tools "
+        "gave you; do not guess one.",
         schema={
             "type": "object",
             "properties": {
@@ -542,6 +567,12 @@ def _perform(
             with code.connect() as db:
                 found = code.references(
                     db, str(args["name"]), str(args.get("relation", ""))
+                )
+            return json.dumps(found, ensure_ascii=False), True
+        if call.name == "expand_symbol":
+            with code.connect() as db:
+                found = code.expand(
+                    db, str(args["name"]), int(args.get("hops", 2))
                 )
             return json.dumps(found, ensure_ascii=False), True
         if call.name == "read_lines":

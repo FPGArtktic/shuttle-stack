@@ -392,16 +392,8 @@ def references(
             f"{relation!r} is not a relation; the ones there are: "
             + ", ".join(sorted(RELATIONS))
         )
-    quoted = name.replace("\\", "\\\\").replace("%", "\\%")
-    quoted = quoted.replace("_", "\\_")
-    query = (
-        "SELECT source, kind, name, line FROM edges"
-        " WHERE (name = ?"
-        + "".join(" OR name LIKE ? ESCAPE '\\'" for _ in SEPARATORS)
-        + ")"
-    )
-    args: list[Any] = [name]
-    args.extend(f"{quoted}{one}%" for one in SEPARATORS)
+    sql, args = _matching(name)
+    query = f"SELECT source, kind, name, line FROM edges WHERE {sql}"
     if kinds:
         query += " AND kind IN (" + ",".join("?" * len(kinds)) + ")"
         args.extend(kinds)
@@ -425,6 +417,362 @@ def references(
         answer["note"] = (
             "nothing in the index names it; index_path reads a file in, "
             "and list_indexed says what is already there"
+        )
+    return answer
+
+
+# --- two-hop expansion ------------------------------------------------
+#
+# A reference is one hop: this file names that thing, at this line.
+# The second hop is what the place doing the naming reaches in turn,
+# and that is where both of M5's scout questions actually live. "Who
+# instantiates counter" is answered by the first hop. "Which layer
+# overrides RDEPENDS" is not: the answer is the recipe assigning it
+# and what that recipe inherits, and the inherit is only reachable
+# from the assignment.
+#
+# It is a join, not a search. Every edge carries the line it sits on
+# and every unit the span it occupies, so the unit enclosing an edge
+# is a comparison. No model, no embedding, no ranking.
+
+# How many definitions, and how many naming sites, to walk out of. A
+# name defined in six places is a name the question was wrong about.
+MAX_DEFINITIONS = 4
+# How many units one name may cover. A module's span is the lowest and
+# highest line of its whole family, so the cap is on inner units and
+# not on definitions.
+MAX_FAMILY = 200
+# How many reached names to report. Without a cap the second hop is a
+# transitive closure of the repository.
+MAX_REACHED = 12
+# Which relation answers "what is this place" first. The second hop
+# is capped, so this order decides what makes the budget. It is a
+# fixed precedence over relation kinds and not a score: what a file
+# pulls in says what it is, an instantiation says what it is made of,
+# and a variable assignment beside another variable assignment is the
+# recipe's header rather than an answer.
+#
+# Measured over meta-virtualization. By line order, expanding
+# RDEPENDS filled all twelve slots with SUMMARY, DESCRIPTION,
+# HOMEPAGE, SECTION, LICENSE and DEPENDS from lines 1 to 14 of
+# openvswitch.inc, and the `inherit autotools` on line 75 — the one
+# structural fact in the file — did not make the budget.
+PRECEDENCE = (
+    "inherit",
+    "require",
+    "include",
+    "source",
+    "use",
+    "instantiate",
+    "provides",
+    "rprovides",
+    "depends",
+    "rdepends",
+    "declare",
+    "call",
+    "assign",
+)
+# How many edges to rank before cutting. The whole span is read, so
+# that a late `inherit` is not lost to an early assignment, and a
+# kind nobody listed sorts after every kind that is.
+MAX_CANDIDATES = 400
+# What a file pulls in says what the file is, wherever in the file it
+# says so. A bbappend's `inherit` is at the top and the variable it
+# overrides at the bottom, so the unit around the override holds
+# neither; the rest of the file is read for these kinds alone, which
+# keeps the structure without the expansion becoming a file listing.
+STRUCTURAL = ("inherit", "require", "include", "source", "use")
+# How much of a definition to show. The chunker emits a container's
+# head as its own unit, so for HDL these lines are the ports and the
+# parameters and for C they are the signature.
+HEAD_LINES = 12
+
+
+@dataclass(frozen=True)
+class Span:
+    """A stretch of one file, and why the expansion is looking at it."""
+
+    source: str
+    first_line: int
+    last_line: int
+    why: str
+    only: tuple[str, ...] = ()
+
+    @property
+    def key(self) -> tuple[str, int, int, tuple[str, ...]]:
+        return (self.source, self.first_line, self.last_line, self.only)
+
+
+def same_name(name: str, other: str) -> bool:
+    """Whether the second is the first, or the first with a tail.
+
+    `RDEPENDS` and `RDEPENDS:${PN}` are the same variable, so an
+    expansion of one must not report the other as something it
+    reaches: a name reaching itself is not a hop.
+    """
+    return other == name or any(
+        other.startswith(f"{name}{one}") for one in SEPARATORS
+    )
+
+
+def _matching(name: str) -> tuple[str, list[Any]]:
+    """SQL for "this name, or this name with a separator after it"."""
+    quoted = name.replace("\\", "\\\\").replace("%", "\\%")
+    quoted = quoted.replace("_", "\\_")
+    sql = (
+        "(name = ?"
+        + "".join(" OR name LIKE ? ESCAPE '\\'" for _ in SEPARATORS)
+        + ")"
+    )
+    return sql, [name, *(f"{quoted}{one}%" for one in SEPARATORS)]
+
+
+def _family(
+    db: sqlite3.Connection, name: str, limit: int
+) -> list[sqlite3.Row]:
+    """Every unit the name covers: the thing, and what is inside it.
+
+    The chunker names a container's inner units `container.inner`, so
+    the separator match that finds `RDEPENDS:${PN}` from `RDEPENDS`
+    also finds a module's body from the module. That is what makes the
+    span below the whole module rather than only its port list, and
+    without it nothing a module instantiates is one hop away.
+    """
+    sql, args = _matching(name)
+    return list(
+        db.execute(
+            "SELECT source, kind, name, first_line, last_line, text"
+            f" FROM units WHERE {sql} ORDER BY source, first_line LIMIT ?",
+            [*args, limit],
+        )
+    )
+
+
+def _as_definition(row: sqlite3.Row) -> dict[str, Any]:
+    head = str(row["text"]).splitlines()[:HEAD_LINES]
+    return {
+        "at": f"{row['source']}:{row['first_line']}",
+        "kind": str(row["kind"]),
+        "name": str(row["name"] or ""),
+        "lines": f"{row['first_line']}-{row['last_line']}",
+        "head": "\n".join(head).rstrip(),
+    }
+
+
+def defines(
+    db: sqlite3.Connection, name: str
+) -> tuple[list[dict[str, Any]], list[Span]]:
+    """Where a name is defined, and the spans to walk out of.
+
+    What is shown is the unit named exactly that, because a module's
+    header is the definition and its sixteen always blocks are not.
+    What is walked is the family's whole extent.
+    """
+    rows = _family(db, name, MAX_FAMILY)
+    exact = [row for row in rows if str(row["name"] or "") == name]
+    shown = (exact or rows)[:MAX_DEFINITIONS]
+    spans: list[Span] = []
+    for source in dict.fromkeys(str(row["source"]) for row in rows):
+        here = [row for row in rows if str(row["source"]) == source]
+        spans.append(
+            Span(
+                source,
+                min(int(row["first_line"]) for row in here),
+                max(int(row["last_line"]) for row in here),
+                f"definition of {name}",
+            )
+        )
+    return [_as_definition(row) for row in shown], spans[:MAX_DEFINITIONS]
+
+
+def _enclosing(
+    db: sqlite3.Connection, source: str, line: int, why: str
+) -> Span | None:
+    """The smallest indexed unit holding that line."""
+    row = db.execute(
+        "SELECT first_line, last_line FROM units WHERE source = ?"
+        " AND first_line <= ? AND last_line >= ?"
+        " ORDER BY last_line - first_line LIMIT 1",
+        (source, line, line),
+    ).fetchone()
+    if row is None:
+        return None
+    return Span(source, int(row["first_line"]), int(row["last_line"]), why)
+
+
+def _also_from(
+    db: sqlite3.Connection,
+    name: str,
+    naming: list[dict[str, Any]],
+    spans: list[Span],
+) -> list[Span]:
+    """Add the units that name it to the ones that define it."""
+    out = list(spans)
+    seen = {one.key for one in out}
+    for one in naming[:MAX_DEFINITIONS]:
+        source, _, line = str(one["at"]).rpartition(":")
+        if not line.isdigit():
+            continue
+        held = _enclosing(db, source, int(line), f"names {name}")
+        if held is None or held.key in seen:
+            continue
+        seen.add(held.key)
+        out.append(held)
+        whole = Span(source, 0, 1 << 30, f"what {source} pulls in", STRUCTURAL)
+        if whole.key not in seen:
+            seen.add(whole.key)
+            out.append(whole)
+    return out
+
+
+def _candidates(
+    db: sqlite3.Connection, span: Span, name: str
+) -> list[sqlite3.Row]:
+    """Every edge one span holds, in the order worth reporting."""
+    query = (
+        "SELECT kind, name, line FROM edges WHERE source = ?"
+        " AND line BETWEEN ? AND ?"
+    )
+    args: list[Any] = [span.source, span.first_line, span.last_line]
+    if span.only:
+        query += " AND kind IN (" + ",".join("?" * len(span.only)) + ")"
+        args.extend(span.only)
+    query += " ORDER BY line LIMIT ?"
+    args.append(MAX_CANDIDATES)
+    rows = [
+        row
+        for row in db.execute(query, args)
+        if not same_name(name, str(row["name"]))
+    ]
+    place = {kind: at for at, kind in enumerate(PRECEDENCE)}
+    rows.sort(
+        key=lambda row: (
+            place.get(str(row["kind"]), len(PRECEDENCE)),
+            int(row["line"]),
+        )
+    )
+    return rows
+
+
+def _next_unseen(
+    rows: list[sqlite3.Row], seen: set[tuple[str, str]]
+) -> sqlite3.Row | None:
+    """The next edge nobody has reported yet, taken off the queue."""
+    while rows:
+        row = rows.pop(0)
+        key = (str(row["kind"]), str(row["name"]))
+        if key not in seen:
+            seen.add(key)
+            return row
+    return None
+
+
+def _as_reached(
+    db: sqlite3.Connection, span: Span, row: sqlite3.Row
+) -> dict[str, Any]:
+    where = _family(db, str(row["name"]), 1)
+    return {
+        "name": str(row["name"]),
+        "relation": str(row["kind"]),
+        "named_at": f"{span.source}:{row['line']}",
+        "through": span.why,
+        "defined_at": (
+            f"{where[0]['source']}:{where[0]['first_line']}" if where else None
+        ),
+    }
+
+
+def _by_turn(
+    held: list[tuple[Span, list[sqlite3.Row]]],
+) -> list[tuple[Span, list[sqlite3.Row]]]:
+    """Order the queues so the rotation visits each file once a round.
+
+    A file contributes two spans — the unit around the name and what
+    the file pulls in — and taking them one after the other gives it
+    two slots before another file gets one. The sort is stable, so
+    within a round the files keep the order they came in.
+    """
+    turn: dict[str, int] = {}
+    numbered = []
+    for one in held:
+        at = turn.get(one[0].source, 0)
+        turn[one[0].source] = at + 1
+        numbered.append((at, one))
+    numbered.sort(key=lambda one: one[0])
+    return [one for _, one in numbered]
+
+
+def _reached(
+    db: sqlite3.Connection, spans: list[Span], name: str, limit: int
+) -> list[dict[str, Any]]:
+    """What those spans name in turn, each span taking a turn.
+
+    Round-robin rather than one ranked list. Expanding EXTRA_OECONF
+    over meta-virtualization, where four layers assign it, a single
+    order spent all twelve slots on openvswitch.inc — five inherits
+    and six DEPENDS — and said nothing about the other three. The
+    question is what each of those layers is, so each one answers
+    before any of them answers twice.
+    """
+    held = [(span, _candidates(db, span, name)) for span in spans]
+    held = _by_turn(held)
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    while len(out) <= limit:
+        took = False
+        for span, rows in held:
+            row = _next_unseen(rows, seen)
+            if row is None:
+                continue
+            took = True
+            out.append(_as_reached(db, span, row))
+            if len(out) > limit:
+                return out
+        if not took:
+            return out
+    return out
+
+
+def expand(
+    db: sqlite3.Connection,
+    name: str,
+    hops: int = 2,
+    limit: int = MAX_REACHED,
+) -> dict[str, Any]:
+    """A name: where it is defined, who names it, what that reaches.
+
+    One hop is the lookup `find_references` already does. Two hops
+    adds what the defining and the naming units refer to themselves,
+    with the location of each of those, so a scout gets the next place
+    to look without a second question and without grepping for it.
+
+    Everything here is a fact the parse established. A `defined_at` of
+    null means the index holds no definition of that name, which is
+    what a call into a library looks like; it is not a failure and
+    guessing at it would be worse.
+    """
+    if not name.strip():
+        raise IndexingError("an expansion needs a name to start from")
+    if hops not in (1, 2):
+        raise IndexingError(f"an expansion is one hop or two, not {hops}")
+    found, spans = defines(db, name)
+    naming = references(db, name)["references"]
+    answer: dict[str, Any] = {
+        "name": name,
+        "hops": hops,
+        "defined": found,
+        "named_from": naming,
+    }
+    if hops == 2:
+        walk = _also_from(db, name, naming, spans)
+        reached = _reached(db, walk, name, limit)
+        answer["reaches"] = reached[:limit]
+        if len(reached) > limit:
+            answer["more_than"] = limit
+    if not found and not naming:
+        answer["note"] = (
+            "nothing in the index defines it or names it; index_path "
+            "reads a file in, and list_indexed says what is there"
         )
     return answer
 

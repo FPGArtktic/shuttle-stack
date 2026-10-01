@@ -485,5 +485,260 @@ class LocationTest(IndexTest):
         self.assertIsNone(code.located(self.db, "counter.sv"))
 
 
+# A module that instantiates the one in CUT, so that the second hop
+# has somewhere to go, and a bbappend whose variable has no definition
+# of its own, which is the case the expansion exists for.
+TOP = Cut(
+    file="counter_top.sv",
+    language="systemverilog",
+    how="tree-sitter",
+    why="",
+    units=[
+        Unit(
+            "module_declaration header",
+            "counter_top",
+            1,
+            5,
+            "module counter_top (\n  input clk,\n  output q\n);",
+        ),
+        Unit(
+            "declarations",
+            "counter_top.lines 7-9",
+            7,
+            9,
+            "counter u0 (.clk(clk));\n\nclk_tick u1 ();",
+        ),
+    ],
+    edges=[
+        Edge("include", "defs.svh", 2),
+        Edge("instantiate", "counter", 7),
+        Edge("instantiate", "clk_tick", 9),
+    ],
+)
+
+APPEND = Cut(
+    file="thing_1.0.bbappend",
+    language="bitbake",
+    how="tree-sitter",
+    why="",
+    units=[
+        Unit("declarations", "lines 1-6", 1, 6, "RDEPENDS:${PN} += ..."),
+    ],
+    edges=[
+        Edge("use", "systemd", 1),
+        Edge("assign", "RDEPENDS:${PN}", 3),
+        Edge("include", "thing-common.inc", 5),
+    ],
+)
+
+
+OTHER = Cut(
+    file="thing_%.bbappend",
+    language="bitbake",
+    how="tree-sitter",
+    why="",
+    units=[
+        Unit("declarations", "lines 1-2", 1, 2, "inherit cmake"),
+        Unit("declarations", "lines 40-42", 40, 42, "RDEPENDS:${PN} += x"),
+    ],
+    edges=[
+        Edge("inherit", "cmake", 1),
+        Edge("assign", "RDEPENDS:${PN}", 41),
+        Edge("assign", "FILES:${PN}", 42),
+    ],
+)
+
+
+class SameNameTest(unittest.TestCase):
+    def test_a_variable_and_its_override_are_one_name(self) -> None:
+        self.assertTrue(code.same_name("RDEPENDS", "RDEPENDS:${PN}"))
+
+    def test_a_longer_name_is_a_different_name(self) -> None:
+        self.assertFalse(code.same_name("counter", "counterweight"))
+
+    def test_a_name_is_itself(self) -> None:
+        self.assertTrue(code.same_name("counter", "counter"))
+
+
+class ExpandTest(IndexTest):
+    """Two hops: M5's expansion, over the same index as the lookup."""
+
+    def test_a_definition_comes_back_with_its_head(self) -> None:
+        self.feed()
+        got = code.expand(self.db, "counter")
+        self.assertEqual(
+            [one["at"] for one in got["defined"]], ["counter.sv:1"]
+        )
+        self.assertEqual(got["defined"][0]["head"], "module counter")
+        self.assertEqual(got["defined"][0]["lines"], "1-4")
+
+    def test_the_head_is_the_ports_for_hdl(self) -> None:
+        """The chunker emits a module's head as its own unit, so the
+        interface falls out of the definition without parsing it."""
+        self.feed("counter_top.sv", TOP)
+        got = code.expand(self.db, "counter_top", hops=1)
+        self.assertIn("input clk", got["defined"][0]["head"])
+
+    def test_the_exact_name_is_preferred_over_what_is_inside_it(
+        self,
+    ) -> None:
+        self.feed()
+        got = code.expand(self.db, "counter", hops=1)
+        self.assertEqual(len(got["defined"]), 1)
+        self.assertEqual(got["defined"][0]["name"], "counter")
+
+    def test_the_second_hop_leaves_the_head_and_walks_the_body(self) -> None:
+        """The whole point: a module's span is its family's extent, so
+        what the body instantiates is one hop from the module."""
+        self.feed("counter_top.sv", TOP)
+        got = code.expand(self.db, "counter_top")
+        reached = {one["name"]: one for one in got["reaches"]}
+        self.assertEqual(set(reached), {"defs.svh", "counter", "clk_tick"})
+        self.assertEqual(reached["counter"]["named_at"], "counter_top.sv:7")
+        self.assertEqual(reached["counter"]["relation"], "instantiate")
+
+    def test_a_reached_name_says_where_it_is_defined(self) -> None:
+        self.feed()
+        self.feed("counter_top.sv", TOP)
+        got = code.expand(self.db, "counter_top")
+        reached = {one["name"]: one for one in got["reaches"]}
+        self.assertEqual(reached["counter"]["defined_at"], "counter.sv:1")
+
+    def test_a_name_the_index_does_not_define_says_so_rather_than_guess(
+        self,
+    ) -> None:
+        self.feed("counter_top.sv", TOP)
+        got = code.expand(self.db, "counter_top")
+        reached = {one["name"]: one for one in got["reaches"]}
+        self.assertIsNone(reached["defs.svh"]["defined_at"])
+
+    def test_who_instantiates_it_is_still_answered(self) -> None:
+        self.feed()
+        self.feed("counter_top.sv", TOP)
+        got = code.expand(self.db, "counter")
+        self.assertEqual(
+            [one["at"] for one in got["named_from"]], ["counter_top.sv:7"]
+        )
+
+    def test_a_variable_with_no_definition_expands_from_the_layer(
+        self,
+    ) -> None:
+        """The other M5 question. A BitBake variable is an assignment
+        and not a unit, so the second hop starts at the recipe that
+        assigns it: what the layer is, is what the layer inherits."""
+        self.feed("thing_1.0.bbappend", APPEND)
+        got = code.expand(self.db, "RDEPENDS")
+        self.assertEqual(got["defined"], [])
+        self.assertEqual(
+            [one["at"] for one in got["named_from"]],
+            ["thing_1.0.bbappend:3"],
+        )
+        reached = {one["name"]: one["relation"] for one in got["reaches"]}
+        self.assertEqual(
+            reached, {"systemd": "use", "thing-common.inc": "include"}
+        )
+        self.assertEqual(got["reaches"][0]["through"], "names RDEPENDS")
+
+    def test_a_name_does_not_reach_its_own_override(self) -> None:
+        self.feed("thing_1.0.bbappend", APPEND)
+        got = code.expand(self.db, "RDEPENDS")
+        self.assertNotIn(
+            "RDEPENDS:${PN}", [one["name"] for one in got["reaches"]]
+        )
+
+    def test_one_hop_stops_at_the_name(self) -> None:
+        self.feed("counter_top.sv", TOP)
+        got = code.expand(self.db, "counter_top", hops=1)
+        self.assertNotIn("reaches", got)
+        self.assertEqual(got["hops"], 1)
+
+    def test_more_than_two_hops_is_refused(self) -> None:
+        with self.assertRaises(IndexingError) as caught:
+            code.expand(self.db, "counter", hops=3)
+        self.assertIn("one hop or two", str(caught.exception))
+
+    def test_an_empty_name_is_refused(self) -> None:
+        with self.assertRaises(IndexingError):
+            code.expand(self.db, "  ")
+
+    def test_too_many_reached_names_say_so(self) -> None:
+        self.feed("counter_top.sv", TOP)
+        got = code.expand(self.db, "counter_top", limit=1)
+        self.assertEqual(len(got["reaches"]), 1)
+        self.assertEqual(got["more_than"], 1)
+
+    def test_a_wildcard_in_the_name_is_text_not_a_pattern(self) -> None:
+        self.feed()
+        got = code.expand(self.db, "count%")
+        self.assertEqual(got["defined"], [])
+        self.assertIn("nothing in the index", got["note"])
+
+    def test_a_name_nobody_knows_says_what_to_call(self) -> None:
+        self.feed()
+        got = code.expand(self.db, "nowhere")
+        self.assertEqual(got["reaches"], [])
+        self.assertIn("index_path", got["note"])
+
+    def test_the_head_is_cut_rather_than_the_whole_definition(self) -> None:
+        long = Cut(
+            file="big.c",
+            language="c",
+            how="tree-sitter",
+            why="",
+            units=[
+                Unit(
+                    "function_definition",
+                    "main",
+                    1,
+                    60,
+                    "\n".join(f"line {i}" for i in range(1, 61)),
+                )
+            ],
+            edges=[],
+        )
+        self.feed("big.c", long)
+        got = code.expand(self.db, "main", hops=1)
+        head = got["defined"][0]["head"].splitlines()
+        self.assertEqual(len(head), code.HEAD_LINES)
+
+
+class ReachOrderTest(IndexTest):
+    """What makes a capped second hop, and what does not."""
+
+    def test_what_a_file_pulls_in_comes_before_its_header(self) -> None:
+        self.feed("thing_1.0.bbappend", APPEND)
+        got = code.expand(self.db, "RDEPENDS", limit=1)
+        self.assertEqual(got["reaches"][0]["name"], "thing-common.inc")
+        self.assertEqual(got["reaches"][0]["relation"], "include")
+
+    def test_every_layer_answers_before_any_answers_twice(self) -> None:
+        """Measured: one ranked list spent the whole budget on the
+        file with the most edges and said nothing about the rest."""
+        self.feed("thing_1.0.bbappend", APPEND)
+        self.feed("thing_%.bbappend", OTHER)
+        got = code.expand(self.db, "RDEPENDS", limit=2)
+        self.assertEqual(
+            {one["named_at"].split(":")[0] for one in got["reaches"]},
+            {"thing_1.0.bbappend", "thing_%.bbappend"},
+        )
+
+    def test_an_inherit_outside_the_unit_is_still_found(self) -> None:
+        """A bbappend inherits at the top and overrides at the bottom,
+        so the unit around the override holds neither."""
+        self.feed("thing_%.bbappend", OTHER)
+        got = code.expand(self.db, "RDEPENDS")
+        reached = {one["name"]: one for one in got["reaches"]}
+        self.assertEqual(reached["cmake"]["relation"], "inherit")
+        self.assertEqual(
+            reached["cmake"]["through"], "what thing_%.bbappend pulls in"
+        )
+
+    def test_a_variable_in_the_file_is_not_read_as_structure(self) -> None:
+        self.feed("thing_%.bbappend", OTHER)
+        got = code.expand(self.db, "RDEPENDS")
+        through = {one["name"]: one["through"] for one in got["reaches"]}
+        self.assertEqual(through["FILES:${PN}"], "names RDEPENDS")
+
+
 if __name__ == "__main__":
     unittest.main()
