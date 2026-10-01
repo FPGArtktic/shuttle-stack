@@ -34,6 +34,7 @@ and M2 the evaluation that says how far either can be trusted.
 | `classify_file` | working — labels enforced by a schema, votes across parts, reports agreement |
 | `extract` | working — fields enforced by a schema, narrows by regexp; refuses a file that needs more than one part |
 | `brainstorm` | working — several options, shape fixed by a schema, content explicitly unverified |
+| Cascade | working, and not worth switching on here — the ladder verified on the first profile every time, and cost 3.2x the seconds |
 | Best-of-n | working — a sample failing its verifier is drawn again, warmer; 1.00 attempts per case over the evaluation set |
 | Sessions | working — a document read once and asked repeatedly; the transcript is the record, the KV dump only a cache |
 | `start_job` / `get_status` / `get_result` | working — a file tool run in the background, polled and collected |
@@ -279,9 +280,9 @@ and the instructions repeat it.
 |---|---|---|
 | `status` | nothing | which servers answer, their models and contexts |
 | `summarize_file` | path, words, focus, profile | one summary, however many parts the file needed |
-| `ask_file` | path, question, pattern, until, context, words, attempts, profile | the answer, or that the file does not answer |
+| `ask_file` | path, question, pattern, until, context, words, attempts, cascade_profiles, profile | the answer, or that the file does not answer |
 | `classify_file` | path, labels, question, profile | one of the labels, the vote and the agreement |
-| `extract` | path, JSON schema, instructions, pattern, until, context, attempts, profile | the fields, in the shape asked for |
+| `extract` | path, JSON schema, instructions, pattern, until, context, attempts, cascade_profiles, profile | the fields, in the shape asked for |
 | `brainstorm` | a request, optionally a path | several options, marked unverified |
 | `session_open` | path, words, pattern, until, context, profile | a session id, the document read and cached |
 | `session_ask` | a session id and a question | the answer, with the cache restored rather than the document resent |
@@ -354,6 +355,40 @@ passed off as read.
 A refusal is never drawn again. Sampling until something comes back would
 reward the model for inventing an answer to a question the file does not
 address, which is the failure the checking exists to prevent.
+
+### The cascade, and why it is off here
+
+`ask_file` and `extract` take `cascade_profiles`, a comma-separated ladder
+such as `fast,extract`. Each profile is asked in turn until one verifies its
+own answer. If none does, the last attempt comes back with `escalate` set and
+the whole ladder recorded, which is the third rung: the question is handed
+back to you with what was tried, rather than answered with something that did
+not check out.
+
+Measured over the eleven verifiable cases of the evaluation set:
+
+```
+direct on long    75s   15901 local tokens
+cascade fast,long 243s  17617 local tokens
+
+0 of 11 climbed past the first profile, 0 came back unverified
+```
+
+The mechanism does what it should: the small server verified its own answer
+every time, so nothing escalated, which satisfies the plan's threshold of
+fewer than one in five by a wide margin. The ladder is still the wrong choice
+on this machine, because it is 3.2 times slower. A cascade saves time when
+the cheap profile is cheap, and here the small server is CPU-only while the
+large one has layers on the GPU and a draft model in front of it. One case
+shows it plainly: the question `LICENSE` does not answer takes 1.8 seconds
+directly and 116.5 through the ladder, because the small server has to read
+7600 tokens at ninety-odd a second first.
+
+So it stays off unless asked for. It earns its place on a machine where the
+small model is genuinely the faster one, or when the GPU is busy with
+something else and `shuttle-long` is the server you cannot have.
+
+`python -m evals.cascade` repeats the comparison.
 
 ### Sessions, for a document you will ask more than once
 
@@ -760,8 +795,8 @@ alongside from M2. M8 is independent of all of it.
   reduction above that completes it.
 - **M2 — sessions, prefix cache and reliability.** Partly done. The
   evaluation set, the sessions over the KV cache, the schema-constrained
-  output and best-of-n with a verifier are in. Still missing: a cascade from
-  `fast` to `long` to the caller carrying the history of attempts, and n-gram
+  output, best-of-n with a verifier and the cascade are in; the cascade is
+  measured and left off, for the reason given above. Still missing: n-gram
   speculative decoding for the tasks whose output copies their input.
 - **M3 — documents.** OCR and indexing ported from
   [WEFT](https://github.com/FPGArtktic/weft-mcp): Tesseract and Poppler in a
