@@ -214,8 +214,13 @@ def summarize_file(
     "the region covers a whole function or section: the same question "
     "over one matching function rather than a whole 35 KB file costs "
     "408 tokens instead of 13079 and answers in three seconds instead "
-    "of twenty-two. Asking several questions about the same region is "
-    "cheaper still. Without a pattern the whole file is read in parts "
+    "of twenty-two. Give `until` as well whenever the passage has an "
+    "end you can name, such as `^[a-z_]+\\(\\)` for the next shell "
+    "function or `^## ` for the next section: the region then stops "
+    "there instead of running on for `context` lines into whatever "
+    "follows, which otherwise gets you an answer about the neighbour. "
+    "Asking several questions about the same region is cheaper still. "
+    "Without a pattern the whole file is read in parts "
     "and the parts that answer are combined. If nothing in the file "
     "answers, the reply says so rather than inventing one."
 )
@@ -225,6 +230,7 @@ def ask_file(
     path: str,
     question: str,
     pattern: str = "",
+    until: str = "",
     context: int = 12,
     words: int = 200,
     profile: str = "long",
@@ -236,6 +242,7 @@ def ask_file(
         words,
         pattern,
         context,
+        until,
     )
 
 
@@ -275,6 +282,7 @@ def extract(
     schema: dict,
     instructions: str = "",
     pattern: str = "",
+    until: str = "",
     context: int = 12,
     profile: str = "extract",
 ) -> dict:
@@ -285,6 +293,7 @@ def extract(
         instructions,
         pattern,
         context,
+        until,
     )
 
 

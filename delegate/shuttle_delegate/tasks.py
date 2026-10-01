@@ -158,7 +158,9 @@ def fit(backend: Backend, text: str, n_predict: int) -> list[str]:
     )
 
 
-def narrowed(text: str, pattern: str, context: int) -> tuple[str, int]:
+def narrowed(
+    text: str, pattern: str, context: int, until: str = ""
+) -> tuple[str, int]:
     """The regions of the text matching the pattern, or the text.
 
     An empty pattern means the whole text. A pattern matching nothing
@@ -167,7 +169,7 @@ def narrowed(text: str, pattern: str, context: int) -> tuple[str, int]:
     """
     if not pattern:
         return text, 0
-    found, matched = narrow(text, pattern, context)
+    found, matched = narrow(text, pattern, context, until)
     if not matched:
         raise TaskError(
             f"nothing in the file matches {pattern!r}; widen the "
@@ -283,6 +285,7 @@ def ask(
     words: int = 200,
     pattern: str = "",
     context: int = CONTEXT_LINES,
+    until: str = "",
 ) -> dict:
     """Answer a question from a file, part by part if it is long.
 
@@ -296,7 +299,7 @@ def ask(
         raise TaskError("ask needs a question")
     if words < 10:
         raise TaskError(f"words must be at least 10, got {words}")
-    text, matched = narrowed(text, pattern, context)
+    text, matched = narrowed(text, pattern, context, until)
     n_predict = max(96, words * 3)
     limit = f" Answer in at most {words} words."
     work = Work()
@@ -402,6 +405,7 @@ def extract(
     instructions: str = "",
     pattern: str = "",
     context: int = CONTEXT_LINES,
+    until: str = "",
 ) -> dict:
     """Pull structured fields out of a text that fits in one go.
 
@@ -411,7 +415,7 @@ def extract(
     """
     if schema.get("type") != "object":
         raise TaskError("schema must be a JSON schema of type 'object'")
-    text, matched = narrowed(text, pattern, context)
+    text, matched = narrowed(text, pattern, context, until)
     n_predict = max(256, backend.context_size() // 8)
     chunks = fit(backend, text, n_predict)
     if not chunks:

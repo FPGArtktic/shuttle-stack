@@ -16,6 +16,8 @@ from dataclasses import dataclass
 
 CONTEXT_LINES = 6
 MAX_REGIONS = 40
+# A boundary that never matches must not pull in the rest of the file.
+MAX_REGION_LINES = 400
 MARKER = "--- line {line}"
 
 
@@ -38,20 +40,48 @@ def compile_pattern(pattern: str) -> re.Pattern[str]:
         raise PatternError(f"{pattern!r} is not a regexp: {error}") from error
 
 
+def _ends_at(lines: list[str], start: int, boundary: re.Pattern[str]) -> int:
+    """The line after the region: the next boundary, or a cap."""
+    cap = min(len(lines), start + MAX_REGION_LINES)
+    for number in range(start + 1, cap):
+        if boundary.search(lines[number]):
+            return number
+    return cap
+
+
 def regions(
-    text: str, pattern: str, context: int = CONTEXT_LINES
+    text: str,
+    pattern: str,
+    context: int = CONTEXT_LINES,
+    until: str = "",
 ) -> list[Region]:
-    """Every matching line with its neighbours, overlaps merged."""
+    """Every matching line with its surroundings, overlaps merged.
+
+    Without `until`, a region is the match and `context` lines either
+    side of it. With it, the region runs from `context` lines before
+    the match to the line before the next one matching `until`, which
+    is how a whole definition or section is asked for without this
+    code knowing what language it is written in.
+
+    The difference is not cosmetic. A six-line definition followed by
+    thirty lines of context hands the model its neighbours, and the
+    answer comes back about them: measured on the installer, four of
+    ten phases were described as the phase defined after them.
+    """
     if context < 0:
         raise ValueError(f"context must not be negative, got {context}")
     matcher = compile_pattern(pattern)
+    boundary = compile_pattern(until) if until else None
     lines = text.splitlines()
     spans: list[list[int]] = []
     for number, line in enumerate(lines):
         if not matcher.search(line):
             continue
         low = max(0, number - context)
-        high = min(len(lines), number + context + 1)
+        if boundary is None:
+            high = min(len(lines), number + context + 1)
+        else:
+            high = _ends_at(lines, number, boundary)
         if spans and low <= spans[-1][1]:
             spans[-1][1] = max(spans[-1][1], high)
         else:
@@ -60,14 +90,17 @@ def regions(
 
 
 def narrow(
-    text: str, pattern: str, context: int = CONTEXT_LINES
+    text: str,
+    pattern: str,
+    context: int = CONTEXT_LINES,
+    until: str = "",
 ) -> tuple[str, int]:
     """The matching regions as one text, and how many there were.
 
     Each region keeps the line number it starts at, so an answer drawn
     from it can be checked against the file it came from.
     """
-    found = regions(text, pattern, context)
+    found = regions(text, pattern, context, until)
     kept = found[:MAX_REGIONS]
     joined = "\n\n".join(
         f"{MARKER.format(line=region.line)}\n{region.text}" for region in kept

@@ -60,3 +60,40 @@ class NarrowTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BoundaryTest(unittest.TestCase):
+    """A region that stops where the caller says it stops."""
+
+    SOURCE = (
+        "first()\n{\n\tone\n}\n\n"
+        "second()\n{\n\ttwo\n\tand more\n}\n\n"
+        "third()\n{\n\tthree\n}\n"
+    )
+    NEXT = r"^[a-z_]+\(\)"
+
+    def test_the_region_stops_at_the_next_definition(self) -> None:
+        found = regions(self.SOURCE, r"^first\(\)", context=0, until=self.NEXT)
+        self.assertEqual(len(found), 1)
+        self.assertIn("one", found[0].text)
+        self.assertNotIn("two", found[0].text)
+
+    def test_without_a_boundary_the_neighbour_comes_too(self) -> None:
+        found = regions(self.SOURCE, r"^first\(\)", context=8)
+        self.assertIn("two", found[0].text)
+
+    def test_a_boundary_that_never_matches_stops_at_the_end(self) -> None:
+        found = regions(self.SOURCE, r"^first\(\)", context=0, until=r"^NOPE$")
+        self.assertIn("three", found[0].text)
+
+    def test_the_last_definition_runs_to_the_end(self) -> None:
+        found = regions(self.SOURCE, r"^third\(\)", context=0, until=self.NEXT)
+        self.assertIn("three", found[0].text)
+
+    def test_narrow_passes_the_boundary_through(self) -> None:
+        text, count = narrow(
+            self.SOURCE, r"^second\(\)", context=0, until=self.NEXT
+        )
+        self.assertEqual(count, 1)
+        self.assertIn("and more", text)
+        self.assertNotIn("three", text)
