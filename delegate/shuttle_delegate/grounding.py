@@ -19,23 +19,38 @@ from dataclasses import dataclass, field
 # Short spans are words rather than citations, and matching them proves
 # nothing either way.
 MIN_QUOTE = 12
-QUOTED = re.compile(rf'"([^"\n]{{{MIN_QUOTE},}})"|`([^`\n]{{{MIN_QUOTE},}})`')
+# Only double quotes mark a citation. Backticks were tried and pair
+# ambiguously: in `shellcheck` ... `checkpatch.pl` the regexp joins the
+# closing backtick of one identifier to the opening one of the next and
+# reports the prose between them as an invented quotation. Markup is
+# dropped in flatten instead, so a backticked identifier inside a
+# quoted span still matches.
+QUOTED = re.compile(rf'"([^"\n]{{{MIN_QUOTE},}})"')
+# A model ends a quotation where its own sentence ends, which moves the
+# final comma to a full stop. That is not a different claim.
+EDGE = ".,;:!? "
 SPACE = re.compile(r"\s+")
 # A backslash before a newline is how a line wraps, not content, and
 # a model quoting across one writes the two halves as a single line.
 CONTINUED = re.compile(r"\\\s*\n\s*")
+# Backticks and emphasis are how Markdown writes a thing down, not part
+# of the thing. A model quoting `subsystem: description` writes it
+# without them and is right to; two of three quotations in a session
+# over CONTRIBUTING.md were reported missing for this alone.
+MARKUP = re.compile(r"[`*]+")
 
 
 def flatten(text: str) -> str:
-    """Wrapping and case dropped, for comparison only."""
-    return SPACE.sub(" ", CONTINUED.sub(" ", text)).strip().lower()
+    """Wrapping, markup and case dropped, for comparison only."""
+    plain = MARKUP.sub("", CONTINUED.sub(" ", text))
+    return SPACE.sub(" ", plain).strip().lower()
 
 
 def quotes(answer: str) -> list[str]:
     """The spans the answer presents as quotations."""
     found = []
     for match in QUOTED.finditer(answer):
-        span = (match.group(1) or match.group(2)).strip()
+        span = match.group(1).strip().strip(EDGE)
         if span and span not in found:
             found.append(span)
     return found

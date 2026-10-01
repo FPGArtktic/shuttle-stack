@@ -24,10 +24,20 @@ class QuotesTest(unittest.TestCase):
             ["a long enough span here"],
         )
 
-    def test_backticked_spans_count_as_citations(self) -> None:
+    def test_backticks_do_not_mark_a_citation(self) -> None:
+        self.assertEqual(quotes("see `extra_network=podman always`"), [])
+
+    def test_backticks_between_identifiers_invent_nothing(self) -> None:
+        answer = (
+            "The linter is `shellcheck`. The text states, "
+            '"shellcheck reports nothing", and `checkpatch.pl` is named.'
+        )
+        self.assertEqual(quotes(answer), ["shellcheck reports nothing"])
+
+    def test_trailing_punctuation_is_not_part_of_the_claim(self) -> None:
         self.assertEqual(
-            quotes("see `extra_network=podman always`"),
-            ["extra_network=podman always"],
+            quotes('it said "at most 72 characters."'),
+            ["at most 72 characters"],
         )
 
     def test_short_spans_are_words_not_citations(self) -> None:
@@ -103,3 +113,25 @@ class ContinuationTest(unittest.TestCase):
 
     def test_the_normalisation_does_not_ground_an_invention(self) -> None:
         self.assertFalse(check('"usermod --remove-subuids 1"', self.SOURCE).ok)
+
+
+class MarkupTest(unittest.TestCase):
+    """Markdown writes a thing down; it is not part of the thing."""
+
+    SOURCE = (
+        "- Subject: `subsystem: imperative description`, at most 72\n"
+        "  characters, no trailing period.\n"
+        "- **shellcheck** reports nothing.\n"
+    )
+
+    def test_a_quote_without_the_backticks_is_grounded(self) -> None:
+        quoted = "Subject: subsystem: imperative description, at most 72"
+        self.assertTrue(check(f'"{quoted}"', self.SOURCE).ok)
+
+    def test_a_quote_without_the_emphasis_is_grounded(self) -> None:
+        self.assertTrue(check('"shellcheck reports nothing"', self.SOURCE).ok)
+
+    def test_dropping_markup_does_not_ground_an_invention(self) -> None:
+        self.assertFalse(
+            check('"ruff reports nothing at all"', self.SOURCE).ok
+        )
