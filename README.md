@@ -1019,6 +1019,17 @@ python -m evals.run --server both
 | total | **20 / 20** | 18 / 20 |
 | seconds | **72** | 631 |
 
+Those seconds were taken on an otherwise idle machine, and they are the
+part of the table that does not travel. Re-run during a working desktop
+session — a browser, an editor, Steam, load average between eight and ten —
+the same suite takes 186 seconds on `shuttle-long` and 1008 on
+`shuttle-fast`, 2.6 and 1.6 times longer, with the GPU sitting at nought
+per cent because the work that is left is on the CPU. The pass counts held:
+20 of 20 and 19 of 20, the one that differed being classification of a long
+document, which is where both of `shuttle-fast`'s failures were. **Read the
+counts as the baseline and the seconds as a property of the machine at the
+time.**
+
 Two things in that table are worth reading twice.
 
 `shuttle-fast` is not faster. It took 631 seconds against 72, nearly nine
