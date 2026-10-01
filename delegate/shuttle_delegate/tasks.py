@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .backend import Backend, Completion
 from .chunking import chunk
+from .grounding import check
 from .retrieval import CONTEXT_LINES, narrow
 
 # Qwen3 averages above this on prose and near it on dense code, so the
@@ -329,7 +330,13 @@ def ask(
             "note": "no part of the file answers this question",
         } | report
     answer = _join(backend, work, answers, question, limit, n_predict)
-    result = {"answer": answer, "found": True} | (report | work.report())
+    # The model saw `text` and nothing else, so that is what a
+    # quotation in its answer has to have come from.
+    result = (
+        {"answer": answer, "found": True}
+        | (report | work.report())
+        | check(answer, text).report()
+    )
     if len(answers) > 1:
         # A part that holds nothing may answer anyway rather than use
         # the sentinel, and the fold then blends it with a real answer.

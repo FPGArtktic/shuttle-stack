@@ -1,0 +1,92 @@
+# SHUTTLE — decyzje projektowe i roadmapa (stan: 2026-09-30)
+
+SHUTTLE Hauls Unwieldy Text To Local Engines. Claude jako orkiestrator, lokalny model llama.cpp jako wykonawca, wszystko w Podman rootless + Quadlet.
+
+Przeznaczenie: narzędzie ogólnego przeznaczenia dla programisty FPGA, niezależne od vendora i toolchainu. Domena: dokumenty (datasheety, standardy, noty aplikacyjne, mapy rejestrów, dokumentacja BSP), logi narzędzi (synteza, timing, symulacja — dowolny vendor), kod HDL i skrypty jako tekst do analizy. Rzeczy specyficzne dla toolchainu (jak Quartus w WEFT) NIE wchodzą do SHUTTLE; to jest warstwa pod takie serwery, nie ich część.
+
+## Decyzje
+- SHUTTLE nie jest projektem pod Quartusa ani rozszerzeniem WEFT. Z WEFT przenoszony jest wyłącznie moduł OCR/RAG: index_document, search_docs, list_indexed_docs, kontener Tesseract + Poppler, strategia "warstwa tekstowa najpierw, OCR tylko dla skanów", cytowania na poziomie klauzul. Ten sam autor, ta sama licencja (GPL-3.0-only) — port kodu, nie most do serwera WEFT.
+- Wariant C: interfejs MCP do Claude stały; pod spodem najpierw własny `delegate` (FastMCP, stałe potoki), DeepSeek Harness (dsh) rozważany później, gdy ustabilizuje API.
+- BitNet b1.58 2B4T wykluczony z roli "długi kontekst": limit 4096 tokenów, brak rekomendacji do użycia produkcyjnego, otwarty błąd relu2/SiLU w llama.cpp (PR #26751), ograniczone wsparcie języków innych niż angielski. Co najwyżej opcjonalny backend profilu "fast" przez bitnet.cpp.
+- Model long: unsloth/Qwen3-8B-GGUF / Qwen3-8B-Q4_K_M.gguf (zweryfikowany). Rodzina Qwen3.8 do sprawdzenia przy M1.
+- Model fast: Qwen3-1.7B Q8_0 (CPU). Draft do speculative decoding: Qwen3-0.6B Q8_0.
+- Model agent (M5): Qwen3-30B-A3B (MoE), eksperci w RAM, attention + KV na GPU (`-ot "ffn.*exps=CPU"`).
+- GPU (RTX 3050 4 GB) w całości dla shuttle-long; bge-m3 w stosie RAG przechodzi na CPU. Istniejący Qdrant + bge-m3 są reużywane jako indeks SHUTTLE (opcjonalnie; instalator ma umieć postawić własne).
+- Port bezpośredni 127.0.0.1 do llama-server włączony w M0/M1, wyłączany flagą po wdrożeniu delegate.
+- Minimum Podman 4.9 (Ubuntu 24.04): bez jednostek .pod i klucza Pod=; wspólna sieć Internal=true.
+- Styl: kernelowy (coding-style.rst, submitting-patches.rst), DCO, shellcheck jako checkpatch. Licencja GPL-3.0-only.
+- Zasada nadrzędna: Claude planuje i ocenia, model lokalny wykonuje. Claude widzi wyłącznie raport o twardym limicie tokenów; pełne wyjście trafia do pliku.
+- Agent lokalny wyłącznie tam, gdzie istnieje weryfikator: walidacja schematu JSON, ugruntowanie cytatów (cytowany fragment istnieje dosłownie w źródle), spójność liczb między przebiegami, a dla kodu — zewnętrzne polecenie weryfikujące podane w presecie (dowolny linter/symulator użytkownika). Bez weryfikatora zadanie zostaje u Claude.
+- Adaptery LoRA są przenośne: plik GGUF + przypięty hash modelu bazowego; uruchamiane na dowolnej maszynie z llama.cpp i tym samym modelem bazowym.
+
+## Roadmapa
+
+Zależności: M0 → M1 → M2 → {M3, M5} → M6 → M7. M4 równolegle od M2. M8 niezależne.
+
+### M0 — warstwa inferencji (repozytorium `shuttle`)
+- install.sh: detect / plan / host / gpu / quadlets / models / verify / bench / status; Arch + Ubuntu 24.04.
+- shuttle-long (GPU, KV q8_0, slot save/restore, draft), shuttle-fast (CPU, np=4), sieć `shuttle` Internal=true.
+- Gotowe, gdy: oba `/health` OK; save/restore KV działa; bench pp/tg dla 2k i 8k zapisany; README z prawdziwymi liczbami.
+
+### M1 — delegate (serwer MCP, FastMCP)
+- Profile TOML: long / fast / extract (endpoint, sampling, limit wyjścia).
+- Narzędzia: summarize_file, brainstorm, extract (json_schema), start_job / get_status / get_result.
+- Limit wyjścia ≤ 1000 tokenów; pełne wyjście do `.shuttle/runs/<id>.md`; audit log JSONL.
+- Golden set: 20 zadań typowych dla programisty FPGA, niezależnych od vendora: ekstrakcja mapy rejestrów z datasheetu do JSON, Q&A do standardu z cytowaniem, streszczenie noty aplikacyjnej, triage logu syntezy/timingu, porównanie dwóch wersji dokumentu. Oceniane przez Claude; wynik bazowy per profil.
+- `.mcp.json` + reguła w CLAUDE.md: pliki > X KB wyłącznie przez delegate.
+- Gotowe, gdy: zmierzona redukcja tokenów Claude na jednym realnym zadaniu; wynik bazowy golden set zapisany.
+
+### M2 — sesje, cache prefiksu, niezawodność
+- session_open / session_ask / session_close; transkrypt JSONL jako źródło prawdy, zrzut KV jako cache.
+- Trwały cache prefiksu: system prompt + dokument → KV na dysku, restore per żądanie.
+- Dekodowanie ograniczone gramatyką: GBNF / json_schema dla każdego wyjścia strukturalnego (raporty, schematy ekstrakcji, mapy rejestrów).
+- Best-of-n z weryfikatorem (n próbek przy wysokiej temperaturze; wygrywa pierwsza przechodząca schemat i ugruntowanie cytatów).
+- Kaskada fast → long → Claude z historią prób.
+- Dekodowanie spekulatywne n-gramowe dla zadań, w których wyjście kopiuje wejście (ekstrakcja, cytowanie).
+- Gotowe, gdy: pytanie do dokumentu 20k tokenów po pierwszym załadowaniu odpowiada w sekundach; extract nigdy nie zwraca nieparsowalnego JSON; kaskada eskaluje do Claude < 20% zadań golden set.
+
+### M3 — OCR i indeksowanie dokumentów (port z WEFT)
+- Obraz `shuttle-docs`: Tesseract (pol + eng), Poppler; `--network=none`, montaż wyłącznie katalogu dokumentów.
+- index_document / search_docs / list_indexed_docs w delegate; warstwa tekstowa najpierw, OCR tylko dla stron bez tekstu; podział na sekcje z zachowaniem numeracji; embeddingi bge-m3 → Qdrant.
+- Wstępne trawienie: streszczenia sekcji, tabele (mapy rejestrów, parametry timingowe, pinout) → JSON, gotowe zrzuty KV dla najczęściej używanych dokumentów.
+- Gotowe, gdy: skan PDF zindeksowany i przeszukiwalny; Claude pyta o sekcję i dostaje ≤ 300 tokenów z cytowaniem (plik, strona, sekcja); tabela rejestrów z datasheetu wychodzi jako poprawny JSON.
+
+### M4 — izolacja i utwardzenie (równolegle od M2)
+- Wyłączenie portów bezpośrednich; bearer token na delegate; delegate jako Quadlet; rotacja audit logu; kopia zapasowa sesji i indeksu.
+- Opcjonalnie: bitnet.cpp jako backend profilu fast; VLM (Qwen-VL 3B, CPU) do diagramów czasowych, schematów blokowych i tabel w obrazach, których Tesseract nie czyta.
+- Gotowe, gdy: z hosta osiągalny wyłącznie delegate na 127.0.0.1 z tokenem; audyt sieci potwierdza brak egressu.
+
+### M5 — agenci ograniczeni
+- agent_start / agent_status / agent_result w delegate; własna pętla ReAct (~300 linii), natywne tool calling llama-server (`--jinja`).
+- Każdy przebieg = kontener Podman: `--network=none`, montaż wyłącznie katalogu zadania (read-only dla źródeł, osobny katalog wyjścia), bez sudo; wynik = pliki wyjściowe + raport JSON.
+- Preset TOML: model, allowlist narzędzi, limit kroków / tokenów / czasu, schemat raportu, polecenie weryfikujące (dowolne — użytkownik podaje własny linter, symulator lub skrypt; SHUTTLE nie zna żadnego vendora).
+- Presety wbudowane: doc-extract (schemat + ugruntowanie cytatów), doc-compare (dwie wersje dokumentu → lista różnic z cytowaniami), doc-qa (search_docs → odpowiedź z cytowaniami), log-triage (log syntezy/timingu/symulacji → ustrukturyzowane ustalenia: ostrzeżenia krytyczne, naruszenia, pliki i linie), repo-scout (grep/read → lista plik:linia), verify-loop (generyczny: generuj → uruchom polecenie weryfikujące → popraw, ≤ N iteracji; lint-fix dla WEFT to instancja tego presetu w konfiguracji użytkownika, nie w SHUTTLE).
+- Profil shuttle-agent: Qwen3-30B-A3B, uruchamiany na żądanie.
+- Gotowe, gdy: doc-extract na 5 dokumentach referencyjnych zgadza się z wzorcowym JSON w ≥ 90% pól bez tokenów Claude; verify-loop zbiega na ≥ 3 z 5 zasianych defektów z dowolnym zewnętrznym weryfikatorem; każdy przebieg ma transkrypt.
+
+### M6 — praca wsadowa (noc)
+- systemd timery: obserwowane katalogi → OCR i indeksowanie nowych dokumentów, trawienie (streszczenia, tabele → JSON), reindeks, odświeżenie zrzutów KV dla najczęściej używanych dokumentów.
+- Cache odpowiedzi: (pytanie, odpowiedź, cytowania) w Qdrant; powtórzone pytanie obsłużone zapytaniem embeddingowym, bez LLM.
+- Opcjonalnie, konfigurowane przez użytkownika: nocne przebiegi presetów verify-loop / log-triage na wskazanych katalogach.
+- Raport poranny do pliku: co zindeksowano, co się nie udało, wyniki nocnych przebiegów; czytelny dla Claude w ≤ 1000 tokenów.
+- Gotowe, gdy: dokument wrzucony wieczorem jest rano przeszukiwalny z cytowaniami; raport przed 07:00 przez 5 kolejnych dni; powtórzone pytanie obsłużone bez LLM.
+
+### M7 — destylacja z Claude
+- Dataset z audit logu: (wejście, wyjście modelu lokalnego, ocena i poprawka Claude).
+- QLoRA na Qwen3-1.7B / 4B (mieści się w 4 GB VRAM); ewaluacja na golden set; A/B base vs LoRA; LoRA ładowany przez `llama-server --lora`.
+- Eksport: adapter jako GGUF (`convert_lora_to_gguf.py`), metadane z hashem modelu bazowego; opcjonalnie scalenie z wagami do jednego GGUF.
+- Gotowe, gdy: LoRA przewyższa model bazowy na golden set o mierzalny margines; retrening jednym poleceniem; adapter uruchomiony na drugiej maszynie daje ten sam wynik golden set.
+
+### M8 — skalowanie i wymiana backendu (opcjonalne)
+- llama.cpp rpc-server: pula maszyn w LAN (air-gapped) jako jeden klaster inferencji.
+- Wymiana backendu bez zmiany interfejsu delegate: większe modele ternarne (BitNet 8B+), nowe formaty kwantyzacji.
+- Ewaluacja dsh headless jako harnessu agentów, gdy API się ustabilizuje.
+
+## Przekrojowo
+- Styl kernelowy, DCO, shellcheck, tests/smoke.sh, CI dla Arch i Ubuntu 24.04 — od M0.
+- Każdy kamień milowy ma kryterium "gotowe" mierzone liczbą, nie wrażeniem.
+- Interfejs MCP do Claude zamrożony od M1; zmiany pod spodem nie zmieniają narzędzi.
+- Zero wiedzy o vendorze w kodzie SHUTTLE. Wszystko specyficzne (polecenia weryfikujące, parsery logów konkretnego narzędzia) wchodzi przez konfigurację użytkownika lub osobne serwery MCP.
+
+## Prompt M0 dla Claude Code
+Pełna treść w rozmowie z 2026-09-29 (wersja "kernel style"). Streszczenie wymagań: jeden plik install.sh (bash, tabulatory, 80 kolumn, funkcje jednozadaniowe, run() jako jedyny punkt dry-run, tabela pakietów zamiast if-ów), fazy detect/plan/host/gpu/quadlets/models/verify/bench/status, README po angielsku wg ustalonej kolejności sekcji, CONTRIBUTING.md z DCO, tests/smoke.sh.
