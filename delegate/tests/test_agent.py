@@ -508,6 +508,35 @@ class BuiltInTest(unittest.TestCase):
 
 
 class ReadSectionTest(LoopTest):
+    def test_a_search_can_be_narrowed_to_one_document(self) -> None:
+        """Without it the loop answered about another report."""
+        preset = Preset(
+            name="x", tools=("search_docs", "finish"), schema=SHAPED
+        )
+        with mock.patch.object(
+            indexing, "search", return_value={"hits": []}
+        ) as searched:
+            self.run_with(
+                preset,
+                [call("search_docs", question="revision", file="top.rpt")],
+                [call("finish", report={"answer": "a"})],
+            )
+        self.assertEqual(searched.call_args.kwargs["file"], "top.rpt")
+
+    def test_without_a_file_the_search_is_not_narrowed(self) -> None:
+        preset = Preset(
+            name="x", tools=("search_docs", "finish"), schema=SHAPED
+        )
+        with mock.patch.object(
+            indexing, "search", return_value={"hits": []}
+        ) as searched:
+            self.run_with(
+                preset,
+                [call("search_docs", question="revision")],
+                [call("finish", report={"answer": "a"})],
+            )
+        self.assertEqual(searched.call_args.kwargs["file"], "")
+
     def test_the_loop_reads_a_section_through_the_index(self) -> None:
         preset = Preset(
             name="x", tools=("read_section", "finish"), schema=SHAPED

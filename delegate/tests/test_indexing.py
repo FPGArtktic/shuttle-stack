@@ -258,6 +258,14 @@ class IndexTest(unittest.TestCase):
         ):
             return indexing.search(question, limit, db=self.db)
 
+    def ask_in(
+        self, question: str, file: str, limit: int = 3
+    ) -> dict[str, Any]:
+        with mock.patch.object(
+            indexing, "embed", side_effect=self.embedding_for
+        ):
+            return indexing.search(question, limit, db=self.db, file=file)
+
     def test_the_schema_is_the_one_weft_writes(self) -> None:
         names = {
             row[0]
@@ -482,6 +490,35 @@ class SectionTest(IndexTest):
             ]
         )
 
+    def test_a_file_alone_answers_with_its_sections(self) -> None:
+        """A document's own table of contents. Measured on a flow
+        report: the ranking put `Flow OS Summary` ahead of `Flow
+        Summary` and the loop never saw the second existed."""
+        self.sheet()
+        got = indexing.section(self.db, "sheet.pdf")
+        self.assertEqual(
+            got["sections"], ["3.1 Supply", "3.2 Timing", "page 5"]
+        )
+        self.assertNotIn("text", got)
+        self.assertIn("name one of these", got["note"])
+
+    def test_a_long_contents_says_it_was_cut(self) -> None:
+        self.feed(
+            many_md=[
+                Section(1, f"{n} One", "x")
+                for n in range(indexing.MAX_CONTENTS + 5)
+            ]
+        )
+        got = indexing.section(self.db, "many.md")
+        self.assertEqual(len(got["sections"]), indexing.MAX_CONTENTS)
+        self.assertEqual(got["more_than"], indexing.MAX_CONTENTS)
+
+    def test_a_document_nobody_indexed_has_no_contents(self) -> None:
+        self.sheet()
+        got = indexing.section(self.db, "other.pdf")
+        self.assertEqual(got["sections"], [])
+        self.assertIn("not an indexed document", got["note"])
+
     def test_a_section_comes_back_whole_rather_than_excerpted(self) -> None:
         self.sheet()
         got = indexing.section(self.db, "sheet.pdf", "3.1 Supply")
@@ -618,6 +655,76 @@ class BoxedHeadingTest(unittest.TestCase):
         sections, how = split("## One\na\n\n## Two\nb\n\n## Three\nc\n")
         self.assertEqual(how, "headings")
         self.assertEqual(len(sections), 3)
+
+
+class WithinTest(IndexTest):
+    """A search narrowed to one document.
+
+    Measured on five Quartus reports: asked for the fields of
+    top.flow.rpt, the loop searched the whole index, read
+    counter.flow.rpt's Flow Summary -- four of the five documents were
+    counter's -- and reported counter's revision, entity, device and
+    register count. Grounding passed, because those strings were in
+    what the tools returned. It checks where a string came from, not
+    which document was asked about.
+    """
+
+    def two(self) -> None:
+        self.feed(
+            one_rpt=[
+                Section(1, "Flow Summary", "Revision Name counter reset"),
+                Section(2, "Timing", "the timer is here"),
+            ],
+            two_rpt=[
+                Section(1, "Flow Summary", "Revision Name top reset"),
+            ],
+        )
+
+    def test_a_search_within_one_document_stays_there(self) -> None:
+        self.two()
+        got = self.ask_in("what is the revision name", "two.rpt")
+        self.assertEqual({one["file"] for one in got["hits"]}, {"two.rpt"})
+        self.assertEqual(got["within"], "two.rpt")
+
+    def test_without_a_file_the_whole_index_is_searched(self) -> None:
+        self.two()
+        got = self.ask("what is the revision name")
+        self.assertGreaterEqual(len({one["file"] for one in got["hits"]}), 2)
+        self.assertNotIn("within", got)
+
+    def test_a_path_is_taken_by_its_name(self) -> None:
+        self.two()
+        got = self.ask_in("revision", "/elsewhere/two.rpt")
+        self.assertEqual({one["file"] for one in got["hits"]}, {"two.rpt"})
+
+    def test_a_document_nobody_indexed_is_refused(self) -> None:
+        self.two()
+        with self.assertRaises(IndexingError) as caught:
+            self.ask_in("revision", "three.rpt")
+        self.assertIn("not an indexed document", str(caught.exception))
+
+    def test_the_narrowed_answer_is_not_served_from_the_cache(self) -> None:
+        """The kept answer is keyed on the question alone, so the
+        narrowed ask would be given the answer about everything."""
+        self.two()
+        broad = self.ask("what is the revision name")
+        self.assertFalse(broad["cached"])
+        narrow = self.ask_in("what is the revision name", "two.rpt")
+        self.assertFalse(narrow["cached"])
+        self.assertEqual({one["file"] for one in narrow["hits"]}, {"two.rpt"})
+        again = self.ask("what is the revision name")
+        self.assertTrue(again["cached"])
+
+    def test_the_semantic_half_ranks_the_document_it_was_given(
+        self,
+    ) -> None:
+        """vec0 takes no condition on the document, so narrowing by
+        cutting the top k of everything would lose a section that is
+        nearest within its file and far down the index."""
+        self.two()
+        got = self.ask_in("timer", "one.rpt")
+        self.assertIn("semantic", got["searched"])
+        self.assertEqual(got["hits"][0]["section"], "Timing")
 
 
 if __name__ == "__main__":

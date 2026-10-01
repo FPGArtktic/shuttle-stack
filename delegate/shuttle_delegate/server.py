@@ -623,15 +623,20 @@ def index_path(
     "document may not use, and the two rankings are fused. The reply "
     "says which half found each hit. The citation is the point: an "
     "answer that names its page can be checked, one that does not "
-    "cannot."
+    "cannot. Name a file to search inside that document alone, which "
+    "is the difference between asking what the index says and asking "
+    "what this report says."
 )
 @anticipated
 def search_docs(
     question: str,
     limit: int = 3,
     profile: str = DEFAULT_PROFILE,
+    file: str = "",
 ) -> dict[str, Any]:
-    return indexing.search(question, limit, backend(profile).count_tokens)
+    return indexing.search(
+        question, limit, backend(profile).count_tokens, file=file
+    )
 
 
 @mcp.tool(

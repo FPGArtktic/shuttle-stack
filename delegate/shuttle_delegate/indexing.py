@@ -71,6 +71,14 @@ MIN_EXCERPT = 60
 READ_CHARS = 4000
 # How many sections to name when a heading matches several.
 MORE_SECTIONS = 5
+# How many sections of one document to rank when a search is narrowed
+# to it. A report of five thousand lines came out in 483 sections, so
+# this is a ceiling rather than a limit anyone meets.
+MAX_IN_DOCUMENT = 1000
+# How many section names to list when a document is asked for without
+# one. A report of five thousand lines has 483 of them, which is a
+# listing nobody reads; forty is a table of contents.
+MAX_CONTENTS = 40
 TIMEOUT = 300.0
 # How many each side contributes before fusion. Wider than the answer
 # because the whole point of two channels is that a section ranked
@@ -575,16 +583,21 @@ def terms(question: str) -> str:
     return " OR ".join(dict.fromkeys(found))
 
 
-def _lexical(db: sqlite3.Connection, question: str) -> list[int]:
+def _lexical(
+    db: sqlite3.Connection, question: str, file: str = ""
+) -> list[int]:
     query = terms(question)
     if not query:
         return []
+    sql = "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?"
+    args: list[Any] = [query]
+    if file:
+        sql += " AND rowid IN (SELECT id FROM chunks WHERE document = ?)"
+        args.append(file)
+    sql += " ORDER BY rank LIMIT ?"
+    args.append(CANDIDATES)
     try:
-        rows = db.execute(
-            "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?"
-            " ORDER BY rank LIMIT ?",
-            (query, CANDIDATES),
-        ).fetchall()
+        rows = db.execute(sql, args).fetchall()
     except sqlite3.OperationalError as error:
         raise IndexingError(
             f"the lexical index refused {query!r}: {error}"
@@ -592,13 +605,37 @@ def _lexical(db: sqlite3.Connection, question: str) -> list[int]:
     return [int(row["rowid"]) for row in rows]
 
 
-def _semantic(db: sqlite3.Connection, vector: list[float]) -> list[int]:
-    rows = db.execute(
-        "SELECT id FROM vec_chunks WHERE embedding MATCH ?"
-        " AND k = ? ORDER BY distance",
-        (_blob(vector), CANDIDATES),
-    ).fetchall()
-    return [int(row["id"]) for row in rows]
+def _semantic(
+    db: sqlite3.Connection, vector: list[float], file: str = ""
+) -> list[int]:
+    """The nearest sections, from the whole index or from one document.
+
+    vec0 answers a KNN query over the table and takes no condition on
+    the document, so narrowing by taking the top k of everything and
+    then dropping the other documents loses a section that is the
+    nearest within its file and far down the index. One document holds
+    tens of sections, not thousands, so its own vectors are ranked
+    here instead -- exactly, and with the cosine the fusion already
+    uses.
+    """
+    if not file:
+        rows = db.execute(
+            "SELECT id FROM vec_chunks WHERE embedding MATCH ?"
+            " AND k = ? ORDER BY distance",
+            (_blob(vector), CANDIDATES),
+        ).fetchall()
+        return [int(row["id"]) for row in rows]
+    mine = [
+        int(row["id"])
+        for row in db.execute(
+            "SELECT id FROM chunks WHERE document = ? ORDER BY ordinal"
+            " LIMIT ?",
+            (file, MAX_IN_DOCUMENT),
+        )
+    ]
+    held = _vectors(db, mine)
+    ranked = sorted(held.items(), key=lambda one: -_cosine(vector, one[1]))
+    return [one[0] for one in ranked[:CANDIDATES]]
 
 
 def fuse(ranked: dict[str, list[int]]) -> list[tuple[int, float, str]]:
@@ -853,6 +890,7 @@ def search(
     budget: int = SEARCH_TOKENS,
     db: sqlite3.Connection | None = None,
     ttl: float = SEARCH_TTL,
+    file: str = "",
 ) -> dict[str, Any]:
     """The sections nearest the question, with where each came from.
 
@@ -875,12 +913,29 @@ def search(
             raise IndexingError(
                 f"{index_file()} holds no documents; index_path adds one"
             )
-        found = remembered(db, question, limit, ttl) if ttl > 0 else None
+        file = Path(file).name if file else ""
+        if (
+            file
+            and not db.execute(
+                "SELECT 1 FROM chunks WHERE document = ? LIMIT 1", (file,)
+            ).fetchone()
+        ):
+            raise IndexingError(
+                f"{file} is not an indexed document; list_indexed says "
+                "what is there, and index_path reads one in"
+            )
+        # A narrowed search is not cached. The kept answer is keyed on
+        # the question and the number wanted, so the same question
+        # asked within one document would be served the answer about
+        # the whole index; the key would have to grow a column and a
+        # narrowed search ranks tens of sections rather than thousands.
+        keep = ttl > 0 and not file
+        found = remembered(db, question, limit, ttl) if keep else None
         if found is not None:
             hits, about = found
         else:
-            hits, about = _look(db, question, limit)
-            if ttl > 0:
+            hits, about = _look(db, question, limit, file)
+            if keep:
                 remember(db, question, limit, hits, about)
         answer: dict[str, Any] = dict(about)
         if count is None:
@@ -895,13 +950,13 @@ def search(
 
 
 def _look(
-    db: sqlite3.Connection, question: str, limit: int
+    db: sqlite3.Connection, question: str, limit: int, file: str = ""
 ) -> tuple[list[Hit], dict[str, Any]]:
     """Ask both halves, fuse, thin. The part worth not repeating."""
-    ranked = {"lexical": _lexical(db, question)}
+    ranked = {"lexical": _lexical(db, question, file)}
     note = ""
     try:
-        ranked["semantic"] = _semantic(db, embed([question])[0])
+        ranked["semantic"] = _semantic(db, embed([question])[0], file)
     except IndexingError as error:
         note = f"the semantic half is missing: {error}"
     fused = fuse(ranked)
@@ -911,6 +966,8 @@ def _look(
         "searched": sorted(name for name, ids in ranked.items() if ids),
         "cached": False,
     }
+    if file:
+        about["within"] = file
     if note:
         about["degraded"] = note
     return hits, about
@@ -936,6 +993,8 @@ def section(
     name = Path(file).name
     if not name:
         raise IndexingError("a section needs a document to read it from")
+    if not heading.strip() and page <= 0:
+        return _contents(db, name)
     rows = _sections_of(db, name, heading, page)
     if not rows:
         return {"file": name, "sections": [], "note": _nothing(db, name)}
@@ -953,6 +1012,39 @@ def section(
             f"page {row['page']}: {row['heading'] or 'no heading'}"
             for row in rows[1:MORE_SECTIONS]
         ]
+    return answer
+
+
+def _contents(db: sqlite3.Connection, name: str) -> dict[str, Any]:
+    """What sections the document has, when none was named.
+
+    A document's own table of contents, which a search cannot stand
+    in for. Measured on a flow report: asked for the fields of its
+    Flow Summary, the ranking put `Flow OS Summary` first and the
+    loop never saw that `Flow Summary` existed -- it searched the same
+    thing three times and reported every field as null. Returning the
+    first section instead, which is a report's legal notice, was no
+    use to anybody.
+    """
+    rows = list(
+        db.execute(
+            "SELECT page, heading FROM chunks WHERE document = ?"
+            " ORDER BY ordinal LIMIT ?",
+            (name, MAX_CONTENTS + 1),
+        )
+    )
+    if not rows:
+        return {"file": name, "sections": [], "note": _nothing(db, name)}
+    answer: dict[str, Any] = {
+        "file": name,
+        "sections": [
+            str(row["heading"] or f"page {row['page']}")
+            for row in rows[:MAX_CONTENTS]
+        ],
+        "note": "name one of these to read it",
+    }
+    if len(rows) > MAX_CONTENTS:
+        answer["more_than"] = MAX_CONTENTS
     return answer
 
 

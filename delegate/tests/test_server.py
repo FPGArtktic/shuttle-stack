@@ -160,5 +160,14 @@ class IndexPathTest(unittest.TestCase):
             self.assertEqual(stored.call_args.args[-1], str(source.resolve()))
 
 
+class SearchDocsTest(unittest.TestCase):
+    def test_a_file_can_narrow_the_search(self) -> None:
+        fields = {
+            tool.name: tool.input_schema["properties"]
+            for tool in asyncio.run(mcp.list_tools())
+        }
+        self.assertIn("file", fields["search_docs"])
+
+
 if __name__ == "__main__":
     unittest.main()

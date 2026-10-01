@@ -188,10 +188,15 @@ class Run:
 SCHEMAS: dict[str, dict[str, Any]] = {
     "search_docs": {
         "description": "Search the indexed documents. Returns sections "
-        "with the file and page each came from.",
+        "with the file and page each came from. Pass a file to search "
+        "inside that document alone; without one the whole index is "
+        "searched and the answer may come from another document.",
         "parameters": {
             "type": "object",
-            "properties": {"question": {"type": "string"}},
+            "properties": {
+                "question": {"type": "string"},
+                "file": {"type": "string"},
+            },
             "required": ["question"],
         },
     },
@@ -225,7 +230,9 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         "description": "Read one whole section of an indexed "
         "document, rather than the excerpt a search returns. Name the "
         "file and the section as search_docs cited them; a page "
-        "serves for a document with no headings.",
+        "serves for a document with no headings. Give the file alone "
+        "and it answers with the sections that document has, which is "
+        "the way to find the one you want.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -403,12 +410,13 @@ BUILT_IN: dict[str, Preset] = {
     "doc-extract": Preset(
         name="doc-extract",
         tools=("search_docs", "read_section", "finish"),
-        task="Pull the fields the request names out of the indexed "
-        "documents. Search for where each one is written, read that "
-        "section with read_section, and report the value as the "
-        "document gives it. Every value goes under 'fields' and the "
-        "file and section it came from under 'cited'. A field the "
-        "documents do not give is reported as null, never guessed.",
+        task="Pull the fields the request names out of the document "
+        "the request names. Call read_section with that file and "
+        "nothing else to see what sections it has, then read the one "
+        "that holds the fields and report each value as the document "
+        "gives it. Every value goes under 'fields' and the file and "
+        "section it came from under 'cited'. A field the document "
+        "does not give is reported as null, never guessed.",
         schema={
             "type": "object",
             "properties": {
@@ -702,7 +710,10 @@ def _perform(
     try:
         if call.name == "search_docs":
             found = indexing.search(
-                str(args["question"]), 3, server.count_tokens
+                str(args["question"]),
+                3,
+                server.count_tokens,
+                file=str(args.get("file", "")),
             )
             return json.dumps(found, ensure_ascii=False), True
         if call.name == "search_code":
