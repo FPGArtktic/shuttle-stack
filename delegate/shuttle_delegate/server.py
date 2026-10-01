@@ -18,6 +18,7 @@ from . import (
     audit,
     cascade,
     code,
+    dataset,
     digest,
     indexing,
     profiles,
@@ -584,6 +585,28 @@ def search_code(
     profile: str = DEFAULT_PROFILE,
 ) -> dict[str, Any]:
     return code.search(question, limit, backend(profile).count_tokens)
+
+
+@mcp.tool(
+    description="Say what you made of a delegated answer, naming the "
+    "run it came back with. This is the only thing here that records "
+    "a judgement rather than a measurement, and it is what the "
+    "distillation set is made of: the input, what the local model "
+    "produced, and whether it was good, wrong or a refusal. Pass a "
+    "correction when the answer was wrong and you know what it should "
+    "have said — a correction teaches more than a verdict. Grade "
+    "whatever you were going to judge anyway; nothing else fills the "
+    "set, and an ungraded call teaches nothing."
+)
+@anticipated
+def grade_run(
+    run: str,
+    verdict: str,
+    correction: str = "",
+    note: str = "",
+) -> dict[str, Any]:
+    with closing(dataset.connect()) as db:
+        return dataset.grade(db, run, verdict, correction, note)
 
 
 @mcp.tool(

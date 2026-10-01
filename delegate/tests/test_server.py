@@ -14,10 +14,11 @@ from shuttle_delegate.tasks import TaskError
 
 JOBLESS = {
     "status",
+    "grade_run",
+    "find_references",
     "index_path",
     "search_docs",
     "search_code",
-    "find_references",
     "list_indexed",
     "start_job",
     "get_status",
@@ -33,6 +34,7 @@ EXPECTED = {
     "search_docs",
     "search_code",
     "find_references",
+    "grade_run",
     "list_indexed",
     "session_open",
     "session_ask",
