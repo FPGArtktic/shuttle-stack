@@ -40,6 +40,7 @@ and M2 the evaluation that says how far either can be trusted.
 | Document index | working — one SQLite file, BM25 and vectors fused, sections cited by file, page and clause, answers under 300 tokens |
 | Source index | working — Tree-sitter units for twelve languages, cited by file and line range; falls back to blank-line blocks and says why |
 | Search cache | working — a repeated search served from the file, 15x faster, invalidated by the index changing rather than by the clock |
+| Answer cache | working, deliberately narrow — a reworded repeat of a question answered without the model, 46x faster; a paraphrase in different words is not, and the measurement below says why |
 | PDF documents | working — text layer first, OCR only for the pages without one, in a container with no network |
 | Sessions | working — a document read once and asked repeatedly; the transcript is the record, the KV dump only a cache |
 | `start_job` / `get_status` / `get_result` | working — a file tool run in the background, polled and collected |
@@ -456,6 +457,61 @@ container runs with `--network=none` and could not fetch one if it wanted to.
 Indexing source costs what indexing prose costs, and for the same reason: 20
 files and 113 units took 190 seconds, nearly all of it bge-m3 on the CPU.
 
+### Asking the same thing twice
+
+`ask_file` is the expensive tool. It reads the file, answers, and is drawn
+again when the answer does not check out: tens of seconds, sometimes minutes.
+Asking it the same question twice in one conversation is the ordinary case,
+so the answer is kept in the index and served from there.
+
+```
+                                       time   local tokens
+how long may a commit subject be      5.95s           1457
+how long may a commit subject be      0.13s              0   from cache
+How long may a commit subject be?     0.14s              0   from cache, 0.023 away
+which linter does the project use     6.97s           1485
+which linter does the project use     0.12s              0   from cache
+```
+
+**It is narrower than it looks, on purpose.** The plan asks for a paraphrase
+to be served too, and that cannot be done safely with a distance. Over 22
+questions written from a datasheet and 22 rewrites of them by `shuttle-long`,
+the rewrites sat between 0.018 and 0.173 apart and every other pairing of the
+462 began at 0.087 — which reads like a clean threshold near 0.2 until you
+notice that a model asked to reword a question keeps most of its vocabulary.
+Six pairs written by hand to mean the same thing in different words:
+
+```
+0.705  which leg is ground               / what pin is VSS on
+0.623  how do I keep the chip cool       / thermal impedance of the PW package
+0.542  how long does a signal take       / what is the propagation delay
+0.402  how hot can it get before it dies / maximum junction temperature
+0.265  what voltage on the supply pin    / absolute maximum supply voltage
+0.177  how much current can one sink     / output low sink current limit
+```
+
+and against them, two questions whose answers differ by a sign:
+
+```
+0.213  how much current can one output sink / ... can one output source
+```
+
+The same question reaches 0.705 and an opposite one 0.213. No threshold lies
+between them, so the cut is below the dangerous pair rather than above the
+useful ones: a reworded repeat is served, a paraphrase in a different
+vocabulary goes to the model, and the datasheet is never answered about
+source when it was asked about sink. Widening this needs something other
+than a distance.
+
+**What it refuses matters more than what it serves.** An answer that failed
+its own grounding check is never kept — the argument for serving a stored
+answer is that it was checked once. An entry belongs to one file at one size
+and modification time, so editing the file throws its answers away. An
+answer narrowed by a `pattern` is not kept at all, having been read from
+whatever region that pattern matched. A cache that cannot be reached is a
+miss and never a failed call. Every hit says what it was originally asked,
+how far that was, and that it cost nothing.
+
 ### PDFs
 
 A path may be a PDF, anywhere a path is taken. It is extracted in the
@@ -854,6 +910,7 @@ that work on a machine the installer set up:
 | `SHUTTLE_HOME` | where runs, sessions and the audit log go; `./.shuttle` by default |
 | `SHUTTLE_INDEX` | the index file; `$SHUTTLE_HOME/documents.sqlite` by default. Point it at WEFT's `documents.sqlite` to share one |
 | `SHUTTLE_SEARCH_TTL` | seconds a search result is served from the cache, 3600 by default; 0 switches the cache off |
+| `SHUTTLE_ANSWER_TTL` | seconds an `ask_file` answer is served from the cache, 86400 by default; 0 switches it off |
 | `SHUTTLE_EMBED_URL` | Ollama, for the embeddings; `http://127.0.0.1:11434` |
 | `SHUTTLE_EMBED_MODEL` | the embedding model, `bge-m3` |
 | `SHUTTLE_DOCS_IMAGE` | the extraction and parsing image, `localhost/shuttle-docs` |
@@ -1028,11 +1085,11 @@ alongside from M2. M8 is independent of all of it.
 - **M5 — constrained agents.** A ReAct loop of its own, each run in a
   container with `--network=none` and only the task directory mounted, driven
   by a preset that names the command which verifies the result.
-- **M6 — batch work.** Partly done: the timer, the watched directories, and
-  the overnight indexing of both documents and source, with a morning report
-  short enough to read in a thousand tokens. Still to come: the digestion,
-  the refreshed KV dumps, and an answer cache that serves a repeated
-  question without reaching a model at all.
+- **M6 — batch work.** Partly done: the timer, the watched directories, the
+  overnight indexing of both documents and source, a morning report short
+  enough to read in a thousand tokens, and the answer cache — narrower than
+  the plan asks for, for the reason given under *Asking the same thing
+  twice*. Still to come: the digestion and the refreshed KV dumps.
 - **M7 — distillation.** QLoRA on what the audit log recorded, evaluated
   against the golden set, the adapter exported as GGUF with the base model's
   hash pinned to it.
