@@ -10,7 +10,7 @@
 set -Eeuo pipefail
 
 readonly SUBSYSTEMS=(install plan quadlet models verify bench delegate
-	docs readme tests build)
+	index agent readme tests build)
 
 errors=0
 scratch=""
