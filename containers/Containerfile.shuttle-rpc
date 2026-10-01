@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# llama.cpp with RPC compiled in, which no official image has.  Both
+# halves are missing from them: `ghcr.io/ggml-org/llama.cpp:server`
+# carries neither the `--rpc` flag nor the worker binary, and `:full`
+# documents the flag and then refuses it with "RPC not supported in
+# this build".  M8 wants a pool of machines serving one model, so the
+# pool has to be built.
+#
+# The worker's target is `ggml-rpc-server` and not `rpc-server`, which
+# is what every piece of documentation calls it.
+#
+# CPU only.  The GPU belongs to shuttle-long, and the point of this
+# image is to prove the plumbing rather than to be fast.
+FROM docker.io/library/debian:13-slim AS build
+
+ARG LLAMA_REF=master
+
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends \
+		build-essential \
+		ca-certificates \
+		cmake \
+		git \
+		libcurl4-openssl-dev \
+	&& rm -rf /var/lib/apt/lists/*
+
+# GGML_NATIVE off so the result runs on a machine that is not this
+# one, which is the whole premise of a pool.
+RUN git clone --depth 1 --branch "$LLAMA_REF" \
+		https://github.com/ggml-org/llama.cpp /src \
+	&& cmake -S /src -B /build \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DGGML_RPC=ON \
+		-DGGML_NATIVE=OFF \
+		-DGGML_CUDA=OFF \
+		-DLLAMA_CURL=OFF \
+		-DLLAMA_BUILD_TESTS=OFF \
+	&& cmake --build /build --config Release \
+		--target ggml-rpc-server llama-server -j "$(nproc)"
+
+FROM docker.io/library/debian:13-slim
+
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends libgomp1 \
+	&& rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /build/bin/ggml-rpc-server /usr/local/bin/
+COPY --from=build /build/bin/llama-server /usr/local/bin/llama-server
+COPY --from=build /build/bin/*.so* /usr/local/lib/
+
+ENV LD_LIBRARY_PATH=/usr/local/lib
+
+# A worker serves compute, not files: it is given no model and reads
+# none.  The model is sent to it over the wire by whoever is driving.
+USER nobody
+ENTRYPOINT ["/usr/local/bin/ggml-rpc-server"]

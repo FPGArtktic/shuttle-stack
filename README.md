@@ -1185,9 +1185,42 @@ alongside from M2. M8 is independent of all of it.
   *Grading an answer* above. The training waits on data rather than on code:
   QLoRA on Qwen3-1.7B, evaluated against the golden set, the adapter exported
   as GGUF with the base model's hash pinned to it.
-- **M8 — scaling.** A pool of machines on a LAN as one cluster through
-  llama.cpp's rpc-server, and swapping the backend underneath without
-  changing a tool.
+- **M8 — scaling.** The cluster works and was measured on one machine;
+  `containers/Containerfile.shuttle-rpc` builds it, because no official
+  llama.cpp image has RPC compiled in. Showing it is worth anything needs a
+  second machine, for the reason under *The cluster* below. The backend swap
+  is dropped: the delegate needs five llama-server endpoints and another
+  server offers one of them.
+
+## The cluster, and why localhost is the wrong place to measure it
+
+M8 wants a pool of machines serving one model through llama.cpp's RPC. Two
+things had to be found out before any of that, and both were measurements
+rather than readings of documentation.
+
+**No official image has RPC.** `ghcr.io/ggml-org/llama.cpp:server` carries
+neither the `--rpc` flag nor the worker binary. `:full` documents the flag in
+its own `--help` and then refuses it: `error while handling argument
+"--rpc": RPC not supported in this build`. So the pool has to be built, which
+`containers/Containerfile.shuttle-rpc` does — CPU only, because the GPU
+belongs to `shuttle-long`. The worker's CMake target is `ggml-rpc-server`,
+not the `rpc-server` that every piece of documentation calls it.
+
+**It works, and on one machine it is slower.** Two workers on loopback with
+four threads each, against the same model and image served directly with
+eight:
+
+| | pp tok/s | tg tok/s |
+|---|---|---|
+| no RPC, 8 threads | 144, 149 | 40.9, 41.2 |
+| two RPC workers, 4 threads each | 123, 128 | 38.6, 38.7 |
+
+15 % off prompt processing and 6 % off generation, which is what splitting
+eight cores into two groups of four and putting TCP between them should cost.
+The plumbing is proven and the benefit is not, because there is no benefit to
+find here: a pool adds the memory of other machines, and both halves of this
+one were already the same memory. A model too large for one machine, on two
+machines, is the experiment — and it needs the second machine.
 
 ## Contributing
 
