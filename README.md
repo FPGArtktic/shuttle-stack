@@ -19,7 +19,7 @@ and M2 the evaluation that says how far either can be trusted.
 
 | Component | State |
 |---|---|
-| `install.sh` phases | working — `detect plan host gpu quadlets models verify bench docs delegate sweep status`, each runnable on its own |
+| `install.sh` phases | working — `detect plan host gpu quadlets models verify bench docs delegate sweep audit status`, each runnable on its own |
 | `shuttle-long` | working — Qwen3-8B Q4_K_M, partial GPU offload through CDI, one slot |
 | `shuttle-fast` | working — Qwen3-1.7B Q8_0, CPU only, four parallel slots |
 | Speculative decoding | working — Qwen3-0.6B draft, 2.15x on generation where it fits in VRAM |
@@ -38,7 +38,12 @@ and M2 the evaluation that says how far either can be trusted.
 | Cascade | working, and not worth switching on here — the ladder verified on the first profile every time, and cost 3.2x the seconds |
 | Best-of-n | working — a sample failing its verifier is drawn again, warmer; 1.00 attempts per case over the evaluation set |
 | Document index | working — one SQLite file, BM25 and vectors fused, sections cited by file, page and clause, answers under 300 tokens |
-| Source index | working — Tree-sitter units for twelve languages, cited by file and line range; falls back to blank-line blocks and says why |
+| Source index | working — Tree-sitter units for fourteen languages, cited by file and line range; falls back to blank-line blocks and says why |
+| Code graph | working — includes, calls, instantiation, inherit, DEPENDS and every variable assignment, read off the parse; `find_references` answers with file:line and no model |
+| Network audit | working — `install.sh audit` proves no egress with two probes, and checks what each server publishes and where |
+| Audit log rotation | working — eight megabytes a generation, four kept, rotated before the write |
+| Backup | working — `shuttle-backup` writes one tar holding the index, the transcripts and the log; the index copied through SQLite, not byte for byte |
+| Distillation set | working, and empty until used — `grade_run` records a verdict and a correction, `shuttle-dataset` exports JSONL |
 | Search cache | working — a repeated search served from the file, 15x faster, invalidated by the index changing rather than by the clock |
 | Answer cache | working, deliberately narrow — a reworded repeat of a question answered without the model, 46x faster; a paraphrase in different words is not, and the measurement below says why |
 | PDF documents | working — text layer first, OCR only for the pages without one, in a container with no network |
@@ -303,7 +308,9 @@ and the instructions repeat it.
 | `index_path` | path, heading | for a document, how many sections and whether by heading or page; for source, the language, the units and how they were cut |
 | `search_docs` | a question, limit | a few sections with file, page and heading, under 300 tokens |
 | `search_code` | a question, limit | a few units with file and line range, under 300 tokens |
-| `list_indexed` | nothing | the documents with their sections and pages, the source files with their language |
+| `find_references` | a name, a relation, limit | every file:line that names it, with no model asked |
+| `grade_run` | a run, a verdict, a correction | the verdict recorded, and how many cases the set now holds |
+| `list_indexed` | nothing | the documents with their sections and pages, the source files with their language, the files with kept answers |
 | `session_open` | path, words, pattern, until, context, profile | a session id, the document read and cached |
 | `session_ask` | a session id and a question | the answer, with the cache restored rather than the document resent |
 | `session_close` | a session id | the cache dropped, the transcript kept |
@@ -434,7 +441,8 @@ structs, enums and typedefs; Bash and Python functions; Verilog and
 SystemVerilog modules, packages, interfaces, always and initial blocks,
 functions and tasks; VHDL entities, architectures, packages and processes;
 device tree nodes; Kconfig entries; Make rules; Tcl procs; BitBake tasks and
-python functions. A run of nodes that is no unit of its own becomes one,
+python functions; Rust items and impl blocks; Go functions, methods and
+types. A run of nodes that is no unit of its own becomes one,
 which is what makes a recipe's SUMMARY, LICENSE, SRC_URI and DEPENDS a unit
 without a rule for it. A module yields what comes before its first inner
 unit rather than itself, so its ports are findable without indexing the whole
@@ -545,6 +553,57 @@ first guess at the wording matched nothing at all.
 `./install.sh docs` builds the image. It is built rather than pulled because
 it is nine lines of apt-get and a shell script, and a reader can see all of
 it.
+
+### The code graph, for a question with one right answer
+
+Some questions are not searches. "Who instantiates `debouncer`" has an answer
+the parse already established, and ranking guesses at it would be worse than
+looking it up. `find_references` is that lookup: no model, no embedding, no
+score.
+
+```
+debouncer / instantiates      counter_top.sv:54   counter_top.sv:65
+clk_tick / instantiates       counter_top.sv:97   counter_top.sv:122
+RDEPENDS                      openvswitch.inc:16  RDEPENDS:${PN}
+                              openvswitch.inc:20  RDEPENDS:${PN}-switch
+autotools / uses              openvswitch.inc:75  slirp4netns_git.bb:21
+```
+
+The relations are read off the same tree as the units: C and C++ includes and
+calls, `include and package imports and module instantiation in Verilog and
+SystemVerilog, use clauses and component and entity instantiation in VHDL,
+`inherit`, `require`, `DEPENDS`, `RDEPENDS` and `PROVIDES` in BitBake, `use`
+and `mod` and calls in Rust, `import` and calls in Go, `source` in shell and
+Tcl. Every variable assignment is an edge too, not only the dependency
+lists, because "which layer overrides this" needs the variables nobody
+thought to enumerate.
+
+A name matches whatever follows it after a separator, which is one rule for
+four languages: `RDEPENDS` finds `RDEPENDS:${PN}`, `std` finds
+`use std::io::Write`, `fmt` finds the call to `fmt.Println`. The separator
+has to be there, so `counter` is not answered about `counterweight`.
+
+Two things it deliberately does not do. A shell or Tcl call is recorded only
+for a name the file defines itself — everything in a shell script is a
+command, and `ls` is not an edge in anybody's graph. And C calls are all
+recorded, including library ones, which makes a large C file produce a lot of
+edges; that is what "includes and calls" asks for.
+
+### Grading an answer, and what it is for
+
+Nothing here records a judgement except `grade_run`. Delegate, judge the
+answer as you were going to anyway, and say whether it was good, wrong or a
+refusal — with a correction when you know what it should have said. The
+verdict lands beside the run it is about, and `shuttle-dataset` exports the
+triples as JSONL: the input, what the local model produced, and what you made
+of it.
+
+That file is the whole of M7 that can exist before the stack has been used.
+Training an adapter on two cases would measure nothing, and the milestone
+asks for one that beats the base model on the golden set by a measurable
+margin. What the call cost is stripped from the exported output: a token
+count is a fact about the delegation, and a model has no business learning to
+emit one.
 
 ### Jobs, when waiting is not an option
 
@@ -911,6 +970,8 @@ that work on a machine the installer set up:
 | `SHUTTLE_INDEX` | the index file; `$SHUTTLE_HOME/documents.sqlite` by default. Point it at WEFT's `documents.sqlite` to share one |
 | `SHUTTLE_SEARCH_TTL` | seconds a search result is served from the cache, 3600 by default; 0 switches the cache off |
 | `SHUTTLE_ANSWER_TTL` | seconds an `ask_file` answer is served from the cache, 86400 by default; 0 switches it off |
+| `SHUTTLE_AUDIT_BYTES` | size at which the audit log rotates, 8 MB by default; 0 never rotates |
+| `SHUTTLE_AUDIT_KEEP` | generations of the log kept beside the live one, 4 by default |
 | `SHUTTLE_EMBED_URL` | Ollama, for the embeddings; `http://127.0.0.1:11434` |
 | `SHUTTLE_EMBED_MODEL` | the embedding model, `bge-m3` |
 | `SHUTTLE_DOCS_IMAGE` | the extraction and parsing image, `localhost/shuttle-docs` |
@@ -934,6 +995,29 @@ estimate will be wrong.
 server and saves and restores a KV slot on `shuttle-long`. It answers the
 question "is this installation working at all". The `pp` and `tg` columns it
 prints come from a 32-token completion and are too short to be a measurement.
+
+`audit` is the hardening check, and it reads rather than changes: podman's
+own view of `Internal=true`, a container on the shuttle network trying to
+leave it, what each server publishes and where, and whether anything that is
+not a `shuttle-` container shares the subnet. It exits non-zero on a FAIL.
+
+Two egress probes, because one proves less than it looks. A name that does
+not resolve is what a broken resolver says on a network that routes perfectly
+well, so the second probe is a bare address and asks about the route. On this
+machine:
+
+```
+audit   network                ok     shuttle has Internal=true
+audit   egress-huggingface.co  ok     (6) Could not resolve host
+audit   egress-1.1.1.1         ok     (7) Failed to connect to 1.1.1.1:443
+audit   shuttle-long           ok     127.0.0.1:8081, loopback only
+audit   shuttle-fast           ok     127.0.0.1:8082, loopback only
+audit   members                ok     only shuttle- containers on shuttle
+```
+
+The same probe on the default network returns HTTP 200. Without that control
+an "ok" here could have meant the probe was broken rather than the network
+closed.
 
 `bench` is the measurement. For each server and each prompt size it builds a
 prompt of exactly that many tokens, sends it with `cache_prompt: false` so that
@@ -1079,20 +1163,28 @@ alongside from M2. M8 is independent of all of it.
   page does not contain named rather than returned. Still to come: the
   digestion the plan asks for — section summaries and tables pulled into
   JSON ahead of time — which is overnight work and belongs with M6.
-- **M4 — isolation and hardening.** The direct ports off, a bearer token on
-  the delegate, the delegate itself as a Quadlet unit, the audit log rotated,
-  and a network audit confirming there is still no egress.
-- **M5 — constrained agents.** A ReAct loop of its own, each run in a
-  container with `--network=none` and only the task directory mounted, driven
-  by a preset that names the command which verifies the result.
+- **M4 — isolation and hardening.** Partly done: `install.sh audit` proves
+  there is no egress, the audit log rotates, and `shuttle-backup` writes the
+  index and the transcripts into one archive. The remaining two parts need a
+  decision rather than code. The milestone's criterion is that only the
+  delegate on 127.0.0.1 with a token is reachable, and the delegate reaches
+  the servers through those same loopback ports from the host, so closing
+  them would cut it off; the token assumes an HTTP delegate where this one
+  speaks stdio, on which a bearer token means nothing.
+- **M5 — code graphs and constrained agents.** Partly done: the graph and
+  the scout above answer the first of the milestone's three criteria. Still
+  to come: the ReAct loop, each run in a container with `--network=none` and
+  only the task directory mounted, driven by a preset that names the command
+  which verifies the result, and the two-hop symbol expansion.
 - **M6 — batch work.** Partly done: the timer, the watched directories, the
   overnight indexing of both documents and source, a morning report short
   enough to read in a thousand tokens, and the answer cache — narrower than
   the plan asks for, for the reason given under *Asking the same thing
   twice*. Still to come: the digestion and the refreshed KV dumps.
-- **M7 — distillation.** QLoRA on what the audit log recorded, evaluated
-  against the golden set, the adapter exported as GGUF with the base model's
-  hash pinned to it.
+- **M7 — distillation.** The set exists and fills as the stack is used; see
+  *Grading an answer* above. The training waits on data rather than on code:
+  QLoRA on Qwen3-1.7B, evaluated against the golden set, the adapter exported
+  as GGUF with the base model's hash pinned to it.
 - **M8 — scaling.** A pool of machines on a LAN as one cluster through
   llama.cpp's rpc-server, and swapping the backend underneath without
   changing a tool.
