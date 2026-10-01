@@ -33,6 +33,7 @@ and M2 the evaluation that says how far either can be trusted.
 | `ask_file` | working — answers from a file, or says the file does not answer; narrows by regexp |
 | `classify_file` | working — labels enforced by a schema, votes across parts, reports agreement |
 | `extract` | working — fields enforced by a schema, narrows by regexp; refuses a file that needs more than one part |
+| `brainstorm` | working — several options, shape fixed by a schema, content explicitly unverified |
 | `start_job` / `get_status` / `get_result` | working — a file tool run in the background, polled and collected |
 | Evaluation set | working — twenty cases with known answers, two of them refusals; 20/20 on the long server, 18/20 on the fast one |
 | Profiles | working — `long`, `fast`, `extract`; endpoint, sampling and report limit, overridable in `profiles.toml` |
@@ -271,6 +272,7 @@ and the instructions repeat it.
 | `ask_file` | path, question, pattern, until, context, words, profile | the answer, or that the file does not answer |
 | `classify_file` | path, labels, question, profile | one of the labels, the vote and the agreement |
 | `extract` | path, JSON schema, instructions, pattern, until, context, profile | the fields, in the shape asked for |
+| `brainstorm` | a request, optionally a path | several options, marked unverified |
 | `start_job` | a tool name and its arguments | a job id, at once |
 | `get_status` | a job id | queued, running, done or failed, with the time |
 | `get_result` | a job id | the finished answer, as the tool would have returned it |
@@ -327,9 +329,12 @@ and how much of the answer comes back. Every tool takes one.
 | `long` | `shuttle-long` | 0.2 | `summarize_file`, `ask_file` |
 | `fast` | `shuttle-fast` | 0.2 | nothing; ask for it when concurrency matters |
 | `extract` | `shuttle-long` | 0.0 | `classify_file`, `extract` |
+| `brainstorm` | `shuttle-long` | 0.8 | `brainstorm` |
 
-Schema-bound work is not sampled: there is one right shape for the answer
-and temperature can only move it away from that.
+Schema-bound work is not sampled: there is one right shape for the answer and
+temperature can only move it away from that. Brainstorming is the one case
+where sampling is the point rather than a hazard, which is why it has a
+profile of its own.
 
 `~/.config/shuttle/profiles.toml` overrides a key or adds a profile; what it
 does not mention keeps the built-in value.
@@ -360,6 +365,21 @@ none.
 
 Every call appends one line to `.shuttle/audit.jsonl`, whether it answered or
 failed, with the arguments, the seconds, the tokens spent and the run file.
+
+`brainstorm` is the exception to all of this and says so in every reply:
+`grounded` is false and the note reads "suggestions, not findings; nothing
+here was verified". The schema fixes the shape, so a caller always receives a
+list of strings, but nothing in them was checked against anything. The rule
+of the project is that a local model is used where a verifier exists; here
+the caller is the verifier, and an idea from it must not be treated as
+something a file says.
+
+Given a file it is noticeably better than given nothing. Asked what could go
+wrong in `probe_publish`, it named an incompatible Podman or netavark, a
+timeout on a misconfigured network, and Podman missing from PATH. Asked
+without a file how to test the installer on a machine with no GPU, it
+suggested GPU emulators, when the answer is the `--no-gpu` flag the installer
+already has.
 
 `ask_file` also reports `quotes` and `quotes_grounded`. Every quoted or
 backticked span in the answer is compared against the text the model was
