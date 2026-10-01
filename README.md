@@ -39,7 +39,7 @@ and M2 the evaluation that says how far either can be trusted.
 | Best-of-n | working — a sample failing its verifier is drawn again, warmer; 1.00 attempts per case over the evaluation set |
 | Document index | working — one SQLite file, BM25 and vectors fused, sections cited by file, page and clause, answers under 300 tokens |
 | Source index | working — Tree-sitter units for fourteen languages, cited by file and line range; falls back to blank-line blocks and says why |
-| Bounded agents | working — six presets, `agent_start` runs one until a verifier agrees or a budget is spent; a preset with no verifier is refused |
+| Bounded agents | working — six presets, `agent_start` runs one until a verifier agrees or a budget is spent; a preset with no verifier is refused; `doc-extract` scores 78% against M5's reference set |
 | Code graph | working — includes, calls, instantiation, inherit, DEPENDS and every variable assignment, read off the parse; `find_references` answers with file:line and no model, `expand_symbol` one hop further |
 | Network audit | working — `install.sh audit` proves no egress with two probes, and checks what each server publishes and where |
 | Audit log rotation | working — eight megabytes a generation, four kept, rotated before the write |
@@ -308,7 +308,7 @@ and the instructions repeat it.
 | `extract` | path, JSON schema, instructions, pattern, until, context, attempts, cascade_profiles, profile | the fields, in the shape asked for |
 | `brainstorm` | a request, optionally a path | several options, marked unverified |
 | `index_path` | path, heading | for a document, how many sections and whether by heading or page; for source, the language, the units and how they were cut |
-| `search_docs` | a question, limit | a few sections with file, page and heading, under 300 tokens |
+| `search_docs` | a question, limit, file | a few sections with file, page and heading, under 300 tokens; a file keeps the search inside that document |
 | `search_code` | a question, limit | a few units with file and line range, under 300 tokens |
 | `find_references` | a name, a relation, limit | every file:line that names it, with no model asked |
 | `expand_symbol` | a name, hops, limit | where it is defined with the head of the definition, who names it, and what those places reach, each as file:line |
@@ -1292,13 +1292,12 @@ alongside from M2. M8 is independent of all of it.
   output, best-of-n with a verifier, the cascade and the n-gram lookup are
   all in. The last two are measured and left off by default, for the reasons
   given above. Nothing of M2 is outstanding.
-- **M3 — documents and code.** Mostly done: the `shuttle-docs` container,
-  the reading, the Tree-sitter chunking for twelve languages, and the hybrid
-  index with its four tools (see *PDFs*, *The index* and *Source* above). A
+- **M3 — documents and code.** Done: the `shuttle-docs` container, the
+  reading, the Tree-sitter chunking for fourteen languages, and the hybrid
+  index with its tools (see *PDFs*, *The index* and *Source* above). A
   register table comes out of a datasheet as valid JSON with the values the
-  page does not contain named rather than returned. Still to come: the
-  digestion the plan asks for — section summaries and tables pulled into
-  JSON ahead of time — which is overnight work and belongs with M6.
+  page does not contain named rather than returned. The digestion the plan
+  asks for was overnight work and arrived with M6.
 - **M4 — isolation and hardening.** Partly done: `install.sh audit` proves
   there is no egress, the audit log rotates, and `shuttle-backup` writes the
   index and the transcripts into one archive. The remaining two parts need a
@@ -1307,13 +1306,15 @@ alongside from M2. M8 is independent of all of it.
   the servers through those same loopback ports from the host, so closing
   them would cut it off; the token assumes an HTTP delegate where this one
   speaks stdio, on which a bearer token means nothing.
-- **M5 — code graphs and constrained agents.** Mostly done: the graph, the
-  two-hop expansion, the scout, the bounded loop and all six presets the
-  design names. Two of the three criteria are met — `repo-scout` answers
-  both of its questions with the right file and line, and `verify-loop`
-  converges on five of five seeded defects. Still to come: `doc-extract`
-  against five reference documents, which needs the reference JSON; over one
-  real timing report it returns three of six fields, every value right.
+- **M5 — code graphs and constrained agents.** The graph, the two-hop
+  expansion, the scout, the bounded loop and all six presets the design
+  names are in. Two of the three criteria are met: `repo-scout` answers both
+  of its questions with the right file and line, and `verify-loop` converges
+  on five of five seeded defects. The third is measured and **not** met —
+  `doc-extract` reaches 21 of 27 fields, 78 %, over five real reports whose
+  expected values were parsed from their own tables, against the 90 % asked
+  for. The one document it fails is diagnosed above; the fix is in what the
+  loop sends as its query, not in the index or the model.
 - **M6 — batch work.** Partly done: the timer, the watched directories, the
   overnight indexing of both documents and source, a morning report short
   enough to read in a thousand tokens, and the answer cache — narrower than
@@ -1434,19 +1435,51 @@ The first failure is a claim about order, and on a log with nothing wrong
 there is no line to quote: grounded, it refused a correct `"verdict":
 "passed"` three times over the words the model had to put somewhere.
 
-`doc-extract` over the same report, asked for six fields, three runs:
+**`doc-extract` against the milestone's criterion.** M5 asks for 90 % of
+fields over five reference documents. The five are real Quartus reports from
+two unrelated projects, and the expected JSON is parsed out of their own
+boxed summary tables — a reference a model helped write is not a reference.
+Twenty-seven fields in all, scored the way grounding compares, with space
+removed and case dropped:
 
 ```
-verified  4 steps  21s   Fmax 154.23 MHz, Restricted Fmax 154.23 MHz,
-                         Clock Name clk
+counter.flow.rpt  6/6  verified  3 steps  22s
+counter.map.rpt   6/6  verified  3 steps  21s
+counter.fit.rpt   6/6  verified  3 steps  23s
+counter.sta.rpt   3/3  verified  3 steps  20s
+top.flow.rpt      0/6  refused   8 steps  51s
+
+21 of 27 = 78 %, so the criterion is not met
 ```
 
-Three of six, the same three every time, each value exactly as the report
-has it. It reads the Fmax summary and finishes; the clock's type, period and
-frequency are in a different section it does not open. Sound rather than
-complete, and below the 90 % of fields M5 asks for — that criterion needs
-five reference documents and their expected JSON, which is the part of M5
-still outstanding.
+Four documents exactly, every value as the report writes it, including a
+`Fitter Status` of `Successful - Sat Aug 22 17:58:59 2026` copied whole. The
+fifth fails for a reason worth naming: the loop sends the whole request as
+its search query, and `From top.flow.rpt pull these fields exactly as the
+report writes them: Revision Name, …` ranks `Flow OS Summary` above `Flow
+Summary`. Asked with the field names alone the right section is first, at
+0.0328 against 0.0141 — so the index is not the problem and neither is the
+model's reading. It is what gets asked.
+
+It is also the better failure of the two available. Before a search could be
+narrowed to a document, the same case returned `counter`'s revision, entity
+and device with grounding's approval; now it returns nothing and says so.
+
+Asked to extract fields that live in two different sections of one document,
+it returns the ones in the section it opened — three of six over three runs,
+each value right. **Sound rather than complete, in both directions.**
+
+Two things it is worth knowing before trusting a shape. A field asked to
+hold something and holding nothing used to verify: an empty object satisfies
+`required` and grounds against anything, having nothing in it to look for,
+so a run that found no field at all reported itself verified. The schema's
+own `minProperties` and `minItems` now say so, which tells the decoding
+grammar the same thing the check is told. And taking the wrong path away
+from a model works where telling it not to take it does not: told to list a
+document's sections first, it called `search_docs` anyway — but removing
+`search_docs` from the preset took the score from 21 of 27 to **0 of 27**,
+because without it the model asked `read_section` for a section called
+`fields`. That change was reverted on the measurement.
 
 **Requiring the fields made it worse, not better.** An operator preset naming
 all six as `required` did not send the loop looking for the three it had not
