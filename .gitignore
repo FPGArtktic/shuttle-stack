@@ -4,3 +4,7 @@ __pycache__/
 *.egg-info/
 project_info.txt
 .shuttle/
+.mypy_cache/
+CLAUDE.md
+docs/design.md
+
