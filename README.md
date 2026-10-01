@@ -685,22 +685,38 @@ trade is not acceptable.
 
 ## Roadmap
 
-- **M1 — delegate.** Done: see *Delegating* above, and *What it saves, on
-  one real task* for the measured reduction that completes it.
-- **M2 — measured behaviour, sessions and KV.** The evaluation set is done:
-  see *How often it is right* above. Named sessions on top of the KV slot
-  dumps are next. A first measurement appeared to rule them out, and it was
-  taken wrongly: the server was still running, so its own prompt cache held
-  the document and restoring a dump saved nothing against it. Measured across
-  a real restart, which is the case that matters, restoring the dump takes a
-  tenth of a second and the next question about the document answers in 6.7
-  seconds against 11.5 without it. The cost is 305 MiB of disk for every
-  cached document.
-- **M3 — WEFT.** Shared conventions with
-  [WEFT](https://github.com/FPGArtktic/weft-mcp) so both tools can be used by
-  the same agent.
-- **M4 — isolation.** Per-caller limits and an audit trail for what was sent to
-  the local models.
+The order of work is M0 to M1 to M2, then M3 and M5, then M6 and M7. M4 runs
+alongside from M2. M8 is independent of all of it.
+
+- **M0 — inference layer.** Done: the two servers, the internal network and
+  the installer that produces them.
+- **M1 — delegate.** Done: the MCP server, its tools, and the measured
+  reduction above that completes it.
+- **M2 — sessions, prefix cache and reliability.** Partly done. The
+  evaluation set, the sessions over the KV cache and the schema-constrained
+  output are in. Still missing: best-of-n with a verifier picking the first
+  sample that passes, a cascade from `fast` to `long` to the caller carrying
+  the history of attempts, and n-gram speculative decoding for the tasks
+  whose output copies their input.
+- **M3 — documents.** OCR and indexing ported from
+  [WEFT](https://github.com/FPGArtktic/weft-mcp): Tesseract and Poppler in a
+  container with no network, the text layer first and OCR only for pages
+  without one, sections kept with their numbering, embeddings into Qdrant.
+- **M4 — isolation and hardening.** The direct ports off, a bearer token on
+  the delegate, the delegate itself as a Quadlet unit, the audit log rotated,
+  and a network audit confirming there is still no egress.
+- **M5 — constrained agents.** A ReAct loop of its own, each run in a
+  container with `--network=none` and only the task directory mounted, driven
+  by a preset that names the command which verifies the result.
+- **M6 — batch work.** systemd timers watching directories: new documents
+  indexed and digested overnight, caches refreshed, and a morning report
+  short enough to read in a thousand tokens.
+- **M7 — distillation.** QLoRA on what the audit log recorded, evaluated
+  against the golden set, the adapter exported as GGUF with the base model's
+  hash pinned to it.
+- **M8 — scaling.** A pool of machines on a LAN as one cluster through
+  llama.cpp's rpc-server, and swapping the backend underneath without
+  changing a tool.
 
 ## Contributing
 
