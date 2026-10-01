@@ -468,5 +468,70 @@ class IndexTest(unittest.TestCase):
         self.assertEqual(len(found), 1)
 
 
+class BoxedHeadingTest(unittest.TestCase):
+    """A report titles its sections in a box, not with a number.
+
+    Measured on a 631-line Quartus timing report: its table of
+    contents went in as 39 headings of forty characters each, because
+    those lines are numbered and the real titles are not, and then
+    every table in the file landed in 23 sections all called
+    "40. Timing Analyzer Messages". Recognising the box takes it to
+    89 sections with the Fmax table under its own name.
+    """
+
+    REPORT = (
+        "+------------------------+\n"
+        "; Fmax Summary           ;\n"
+        "+------------+-----------+\n"
+        "; Fmax       ; Clock     ;\n"
+        "+------------+-----------+\n"
+        "; 154.23 MHz ; clk       ;\n"
+        "+------------+-----------+\n"
+        "+------------------------+\n"
+        "; Setup Summary          ;\n"
+        "+------------+-----------+\n"
+        "; Slack      ; 1.234     ;\n"
+        "+------------+-----------+\n"
+        "+------------------------+\n"
+        "; Hold Summary           ;\n"
+        "+------------+-----------+\n"
+        "; Slack      ; 0.321     ;\n"
+        "+------------+-----------+\n"
+    )
+
+    def test_a_boxed_title_is_a_heading(self) -> None:
+        sections, how = split(self.REPORT)
+        self.assertEqual(how, "headings")
+        self.assertEqual(
+            [one.heading for one in sections],
+            ["Fmax Summary", "Setup Summary", "Hold Summary"],
+        )
+
+    def test_the_table_goes_with_its_title(self) -> None:
+        sections, _ = split(self.REPORT)
+        self.assertIn("154.23 MHz", sections[0].text)
+        self.assertNotIn("154.23 MHz", sections[1].text)
+
+    def test_a_header_row_is_not_a_title(self) -> None:
+        """One cell is what tells a title from a row of columns."""
+        sections, _ = split(self.REPORT)
+        self.assertNotIn("Fmax       ; Clock", [s.heading for s in sections])
+
+    def test_a_cell_with_no_rule_above_it_is_not_a_title(self) -> None:
+        text = "--- page 1\n; not a title ;\n; nor this ;\n; nor this ;\n"
+        _, how = split(text)
+        self.assertEqual(how, "pages")
+
+    def test_an_empty_cell_is_not_a_title(self) -> None:
+        text = "--- page 1\n" + "+-----+\n;     ;\n" * 4
+        _, how = split(text)
+        self.assertEqual(how, "pages")
+
+    def test_markdown_is_left_alone(self) -> None:
+        sections, how = split("## One\na\n\n## Two\nb\n\n## Three\nc\n")
+        self.assertEqual(how, "headings")
+        self.assertEqual(len(sections), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -95,6 +95,24 @@ HEADING = r"^\s*(\d+(\.\d+)*\.?\s+[A-Z][a-z]{2,}|#{1,6}\s+\S)"
 # package thermal impedance is calculated..." put the whole file into
 # heading mode and then every page of it was cited under that footnote.
 MIN_HEADINGS = 3
+# The other way a report titles a section: a one-cell row of an ASCII
+# table, under a rule with no interior join.
+#
+#     +--------------------------------------------------+
+#     ; Slow 1200mV 125C Model Fmax Summary              ;
+#     +------------+-----------------+------------+------+
+#     ; Fmax       ; Restricted Fmax ; Clock Name ; Note ;
+#
+# The one cell is what tells a title from a header row, and the
+# unbroken rule above it says the same thing twice. This is a text
+# convention and not vendor knowledge — no more so than `## ` — and
+# the reason it is needed is measured: a 631-line timing report put
+# its table of contents in as 39 headings of forty characters each,
+# because those lines are numbered and the real titles are not, and
+# then every table in the file, Fmax included, landed in 23 sections
+# all called "40. Timing Analyzer Messages".
+RULE = re.compile(r"^\+-+\+$")
+TITLE = re.compile(r"^;\s*([^;]*?)\s*;$")
 PAGE = re.compile(re.escape(MARKER).replace(r"\{page\}", r"(\d+)"))
 # The number at the front of a heading, kept apart from its words so
 # that "4.2.1" is a term a lexical search can hit.
@@ -370,9 +388,9 @@ def split(text: str, heading: str = HEADING) -> tuple[list[Section], str]:
     per page, and the answer says which happened: a caller told it
     indexed sections should be able to find out it indexed pages.
     """
-    marker = re.compile(heading)
     lines = text.splitlines()
-    if sum(bool(marker.match(line)) for line in lines) < MIN_HEADINGS:
+    titles = _headings(lines, re.compile(heading))
+    if len(titles) < MIN_HEADINGS:
         return _within_limit(_by_page(text)), "pages"
 
     found: list[Section] = []
@@ -384,7 +402,7 @@ def split(text: str, heading: str = HEADING) -> tuple[list[Section], str]:
         if held:
             found.append(Section(at_page, heading_text, "\n".join(held)))
 
-    for line in lines:
+    for at, line in enumerate(lines):
         seen = PAGE.match(line.strip())
         if seen:
             page = int(seen.group(1))
@@ -397,13 +415,37 @@ def split(text: str, heading: str = HEADING) -> tuple[list[Section], str]:
             held = []
             at_page = page
             continue
-        if marker.match(line):
+        if at in titles:
             close()
             held = []
-            at_page, heading_text = page, line.strip()[:120]
+            at_page, heading_text = page, titles[at]
         held.append(line)
     close()
     return _within_limit(found), "headings"
+
+
+def _headings(lines: list[str], marker: re.Pattern[str]) -> dict[int, str]:
+    """Which lines start a section, and what each one is called.
+
+    Found before the walk rather than during it, because a boxed title
+    is recognised by the line above it and because the count decides
+    whether this document has headings at all.
+    """
+    out: dict[int, str] = {}
+    for at, line in enumerate(lines):
+        if marker.match(line):
+            out[at] = line.strip()[:120]
+            continue
+        boxed = TITLE.match(line.strip())
+        if not boxed or not boxed.group(1):
+            continue
+        # The section starts at the rule above the title and not at
+        # the title, so the box is not cut in half: keying it on the
+        # title left every section ending in a stray `+----+` and the
+        # first one holding nothing but that line.
+        if at and RULE.match(lines[at - 1].strip()):
+            out[at - 1] = boxed.group(1)[:120]
+    return out
 
 
 def _by_page(text: str) -> list[Section]:
