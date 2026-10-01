@@ -34,6 +34,7 @@ and M2 the evaluation that says how far either can be trusted.
 | `classify_file` | working — labels enforced by a schema, votes across parts, reports agreement |
 | `extract` | working — fields enforced by a schema, narrows by regexp; refuses a file that needs more than one part |
 | `brainstorm` | working — several options, shape fixed by a schema, content explicitly unverified |
+| Best-of-n | working — a sample failing its verifier is drawn again, warmer; 1.00 attempts per case over the evaluation set |
 | Sessions | working — a document read once and asked repeatedly; the transcript is the record, the KV dump only a cache |
 | `start_job` / `get_status` / `get_result` | working — a file tool run in the background, polled and collected |
 | Evaluation set | working — twenty cases with known answers, two of them refusals; 20/20 on the long server, 18/20 on the fast one |
@@ -278,9 +279,9 @@ and the instructions repeat it.
 |---|---|---|
 | `status` | nothing | which servers answer, their models and contexts |
 | `summarize_file` | path, words, focus, profile | one summary, however many parts the file needed |
-| `ask_file` | path, question, pattern, until, context, words, profile | the answer, or that the file does not answer |
+| `ask_file` | path, question, pattern, until, context, words, attempts, profile | the answer, or that the file does not answer |
 | `classify_file` | path, labels, question, profile | one of the labels, the vote and the agreement |
-| `extract` | path, JSON schema, instructions, pattern, until, context, profile | the fields, in the shape asked for |
+| `extract` | path, JSON schema, instructions, pattern, until, context, attempts, profile | the fields, in the shape asked for |
 | `brainstorm` | a request, optionally a path | several options, marked unverified |
 | `session_open` | path, words, pattern, until, context, profile | a session id, the document read and cached |
 | `session_ask` | a session id and a question | the answer, with the cache restored rather than the document resent |
@@ -330,6 +331,29 @@ visible. The newest sixty-four settled jobs are kept and the rest forgotten.
 Everything a job does is recorded exactly as a direct call is: the same
 report limit, the same run file, the same line in the audit log. The two
 paths differ in who waits and in nothing else.
+
+### Drawing again when the answer does not check out
+
+Two of the tools can verify their own answers, and both report `verified`
+and `attempts`.
+
+`ask_file` compares every quotation against the text the model was shown.
+`extract` compares every string value it returns against the same text: the
+server holds the answer to your schema so its shape can never be wrong, but a
+value the text does not contain was not read out of it. Numbers and booleans
+are the model's reading rather than a span of the text and are left alone, as
+are values too short to be a quotation.
+
+A sample that fails is drawn again, warmer, up to `attempts` times, two by
+default. The first attempt uses the profile's own temperature, so a correct
+answer costs exactly what it did before: over the evaluation set this comes to
+**1.00 attempts per case**. What still fails after the last attempt is
+reported in `values_not_in_source` or `quotes_not_in_source` rather than
+passed off as read.
+
+A refusal is never drawn again. Sampling until something comes back would
+reward the model for inventing an answer to a question the file does not
+address, which is the failure the checking exists to prevent.
 
 ### Sessions, for a document you will ask more than once
 
@@ -735,11 +759,10 @@ alongside from M2. M8 is independent of all of it.
 - **M1 — delegate.** Done: the MCP server, its tools, and the measured
   reduction above that completes it.
 - **M2 — sessions, prefix cache and reliability.** Partly done. The
-  evaluation set, the sessions over the KV cache and the schema-constrained
-  output are in. Still missing: best-of-n with a verifier picking the first
-  sample that passes, a cascade from `fast` to `long` to the caller carrying
-  the history of attempts, and n-gram speculative decoding for the tasks
-  whose output copies their input.
+  evaluation set, the sessions over the KV cache, the schema-constrained
+  output and best-of-n with a verifier are in. Still missing: a cascade from
+  `fast` to `long` to the caller carrying the history of attempts, and n-gram
+  speculative decoding for the tasks whose output copies their input.
 - **M3 — documents.** OCR and indexing ported from
   [WEFT](https://github.com/FPGArtktic/weft-mcp): Tesseract and Poppler in a
   container with no network, the text layer first and OCR only for pages
