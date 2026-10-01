@@ -39,7 +39,7 @@ and M2 the evaluation that says how far either can be trusted.
 | Best-of-n | working — a sample failing its verifier is drawn again, warmer; 1.00 attempts per case over the evaluation set |
 | Document index | working — one SQLite file, BM25 and vectors fused, sections cited by file, page and clause, answers under 300 tokens |
 | Source index | working — Tree-sitter units for fourteen languages, cited by file and line range; falls back to blank-line blocks and says why |
-| Bounded agents | working — `agent_start` runs a preset until a verifier agrees or a budget is spent; a preset with no verifier is refused |
+| Bounded agents | working — six presets, `agent_start` runs one until a verifier agrees or a budget is spent; a preset with no verifier is refused |
 | Code graph | working — includes, calls, instantiation, inherit, DEPENDS and every variable assignment, read off the parse; `find_references` answers with file:line and no model, `expand_symbol` one hop further |
 | Network audit | working — `install.sh audit` proves no egress with two probes, and checks what each server publishes and where |
 | Audit log rotation | working — eight megabytes a generation, four kept, rotated before the write |
@@ -1308,9 +1308,12 @@ alongside from M2. M8 is independent of all of it.
   them would cut it off; the token assumes an HTTP delegate where this one
   speaks stdio, on which a bearer token means nothing.
 - **M5 — code graphs and constrained agents.** Mostly done: the graph, the
-  two-hop expansion, the scout, and the bounded loop above meet two of the
-  milestone's three criteria. Still to come: `doc-extract` against five
-  reference documents, which needs the reference JSON.
+  two-hop expansion, the scout, the bounded loop and all six presets the
+  design names. Two of the three criteria are met — `repo-scout` answers
+  both of its questions with the right file and line, and `verify-loop`
+  converges on five of five seeded defects. Still to come: `doc-extract`
+  against five reference documents, which needs the reference JSON; over one
+  real timing report it returns three of six fields, every value right.
 - **M6 — batch work.** Partly done: the timer, the watched directories, the
   overnight indexing of both documents and source, a morning report short
   enough to read in a thousand tokens, and the answer cache — narrower than
@@ -1345,23 +1348,51 @@ preset has.
 ```
 repo-scout    steps=10  a report schema; grounding places
 doc-qa        steps=8   a report schema; grounding cited
+doc-extract   steps=12  a report schema; grounding the field values
+doc-compare   steps=12  a report schema; grounding the quotations
+log-triage    steps=12  a report schema; grounding the error lines
 verify-loop   steps=14  bash -n
 ```
+
+The agent's own tool list is smaller than the delegate's and shaped for a
+model: `search_docs`, `search_code`, `find_references`, `expand_symbol`,
+`read_section`, `read_lines`, `write_file`, `run_verifier`, `finish`.
+`read_section` is the one a document preset cannot do without — a search
+says which section holds the answer and spends three hundred tokens on the
+hit, which is not enough to read a register table or an error line out of.
 
 **`verify-loop` on five seeded defects.** Five shell scripts, one syntax
 error each, `bash -n` as the verifier, which M5 asks to converge on at least
 three of:
 
 ```
-one.sh    verified  4 steps   9s        four.sh   verified  4 steps   9s
-two.sh    verified  4 steps   8s        five.sh   verified  4 steps  11s
-three.sh  verified  4 steps   9s
+one.sh    verified  7 steps  26s        four.sh   verified  4 steps  16s
+two.sh    verified  7 steps  26s        five.sh   verified  8 steps  29s
+three.sh  verified  4 steps  15s
 ```
 
-Five of five, and `bash -n` passes on every file it left. What that does not
-mean: `four.sh` came back with its `case` rewritten as an `if/elif`, and
-`two.sh` lost its shebang. Both pass the verifier, because a syntax verifier
-checks syntax. **A verifier gates what it checks and nothing else**, which is
+Five of five, every one leaving a file `bash -n` accepts, and every fix the
+minimal one: the missing `fi`, `}`, `done`, `done`, and for the `case` an
+`esac` with a default branch. Three of the five leave no newline at the end
+of the file.
+
+**These numbers replace an earlier set that was not measuring anything.**
+The transcript used to live in the directory the verifier is handed, so
+SHUTTLE's own `steps.jsonl` was passed to the verifier as a file to check —
+and `bash -n` reads its first file argument and treats the rest as positional
+parameters. Whether the agent's work was checked depended on its name:
+`one.sh`, `four.sh` and `five.sh` sort before `steps.jsonl`, `two.sh` and
+`three.sh` sort after it. `two.sh` came back byte for byte as it went in and
+the run called itself verified in four steps. The agent now writes into
+`<run>/out` and the verifier is mounted there; the transcript stays beside it
+and is nobody's input. The extra steps above are the loop doing the thing it
+exists for — being refused and trying again.
+
+The earlier text here also reported `four.sh` rewritten as an `if/elif` and
+`two.sh` losing its shebang, as evidence that a verifier gates only what it
+checks. That evidence was an artefact of the same bug: with nothing refusing
+it, the model rewrote freely. **The principle stands and the examples do
+not.** A syntax verifier still accepts a file whose logic is wrong, which is
 the thing to remember before putting one in a preset.
 
 **`repo-scout` on the milestone's two questions.** Every place it reports is
@@ -1383,6 +1414,54 @@ modules defined" is three steps and 19 seconds — `find_references`,
 file and line for each. See *Two hops* above for where the prose is weaker
 than the places.
 
+**The document presets, and where each stops.** `log-triage` on a real
+`make` log with one error among thirteen warnings from six other files:
+
+```
+what failed in build.log      verified  3 steps  19s
+                              src/ring_bad.c:10:25: error: expected ';'
+                              before 'return'
+```
+
+The right line, and the first failure rather than the last. On a clean
+timing report the same preset does not converge at all — three runs, twelve
+steps each, nothing reported. Evidence of a failure can be found; evidence
+of its absence has no stopping rule. What counts as a failure also differs
+between vendors, and that is what the preset's verifier command is for.
+
+Only the error lines are grounded, not the verdict, the advice or `first`.
+The first failure is a claim about order, and on a log with nothing wrong
+there is no line to quote: grounded, it refused a correct `"verdict":
+"passed"` three times over the words the model had to put somewhere.
+
+`doc-extract` over the same report, asked for six fields, three runs:
+
+```
+verified  4 steps  21s   Fmax 154.23 MHz, Restricted Fmax 154.23 MHz,
+                         Clock Name clk
+```
+
+Three of six, the same three every time, each value exactly as the report
+has it. It reads the Fmax summary and finishes; the clock's type, period and
+frequency are in a different section it does not open. Sound rather than
+complete, and below the 90 % of fields M5 asks for — that criterion needs
+five reference documents and their expected JSON, which is the part of M5
+still outstanding.
+
+**Requiring the fields made it worse, not better.** An operator preset naming
+all six as `required` did not send the loop looking for the three it had not
+read. It filled them — two as `"not specified"` and one copied out of the
+Fmax table as the clock's frequency — and spent fourteen steps and two and a
+half minutes being refused, twice over. Under-reporting with every value
+right is the better failure, which is why the built-in shape takes its fields
+from the request instead.
+
+That run also shows what grounding does not do. The two `"not specified"`
+values were refused, because the report does not contain them. The clock
+frequency copied from the Fmax row was **not** refused, because `154.23 MHz`
+is in the source — just not in that row. **Grounding checks where a string
+came from, not which field it belongs in.**
+
 **Two things that mattered more than the loop.** Putting the report schema
 inside the `finish` tool, so the shape is held by the decoding grammar rather
 than only checked afterwards: before that, one run invented its own field
@@ -1393,9 +1472,17 @@ calling — refusing that is not integrity, it is a formatting argument the loop
 loses, and it cost six of ten steps on a run that already had the answer. The
 transcript records which channel was used.
 
-Bounded three ways, because each runs out first in a different failure: steps
-for a model asking for the same tool forever, tokens for one writing an essay
-every step, seconds for a verifier that hangs. The reply says which. The
+Bounded four ways, because each runs out first in a different failure: steps
+for a model that keeps finding more to do, tokens for one writing an essay
+every step, seconds for a verifier that hangs, and a repeated lookup for the
+simplest way to go nowhere. That last one was counting failures only, so a
+successful call reset it: `doc-compare` over two corners of a timing report
+called `search_docs` with identical arguments seven times in a row, every
+call successful, and spent all twelve steps and 206 seconds on it. A lookup
+asked the same thing a third time now ends the run and the reason names the
+tool; `run_verifier` and `write_file` are exempt, because asking the
+verifier again after a write is the shape of `verify-loop` rather than a
+loop standing still. The reply says which bound stopped it. The
 verifier itself runs in its own container with no network and the output
 directory read-only, because a verifier command is arbitrary code out of a
 configuration file.
