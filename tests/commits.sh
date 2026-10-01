@@ -58,6 +58,13 @@ check_tree()
 {
 	local commit=$1
 
+	# Running one commit's tests can leave a file behind or change one
+	# the commit tracks, and the next commit is to be judged on its own
+	# tree rather than on what the previous one did to this directory.
+	# Ignored files survive, so the environment the delegate's tests
+	# build is not rebuilt for every commit in the range.
+	git -C "$scratch/tree" reset -q --hard
+	git -C "$scratch/tree" clean -qfd
 	git -C "$scratch/tree" checkout -q --detach "$commit"
 	if [[ ! -x $scratch/tree/tests/smoke.sh ]]; then
 		return 0
