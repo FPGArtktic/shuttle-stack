@@ -227,7 +227,7 @@ class LoopTest(unittest.TestCase):
         kept = json.loads((run.directory / "report.json").read_text())
         self.assertTrue(kept["verified"])
 
-    def test_write_file_stays_in_the_run_directory(self) -> None:
+    def test_write_file_stays_in_the_output_directory(self) -> None:
         preset = Preset(
             name="x", tools=("write_file", "finish"), schema=SHAPED
         )
@@ -237,9 +237,28 @@ class LoopTest(unittest.TestCase):
             [call("write_file", name="kept.txt", text="yes")],
             [call("finish", report={"answer": "a"})],
         )
-        self.assertTrue((run.directory / "escape.txt").is_file())
+        self.assertTrue((run.output / "escape.txt").is_file())
         self.assertFalse(Path(self.dir.name, "escape.txt").exists())
-        self.assertEqual((run.directory / "kept.txt").read_text(), "yes")
+        self.assertEqual((run.output / "kept.txt").read_text(), "yes")
+
+    def test_the_transcript_is_not_in_what_the_verifier_checks(
+        self,
+    ) -> None:
+        """The run's own steps.jsonl was being handed to the operator's
+        verifier as a file to check, and bash reads only the first of
+        its arguments, so the agent's file went unchecked."""
+        preset = Preset(
+            name="x", tools=("write_file", "finish"), schema=SHAPED
+        )
+        run = self.run_with(
+            preset,
+            [call("write_file", name="fix.sh", text="echo hi\n")],
+            [call("finish", report={"answer": "a"})],
+        )
+        self.assertEqual(
+            [one.name for one in run.output.iterdir()], ["fix.sh"]
+        )
+        self.assertTrue((run.directory / "steps.jsonl").is_file())
 
     def test_a_dotfile_is_not_written(self) -> None:
         preset = Preset(
@@ -250,7 +269,7 @@ class LoopTest(unittest.TestCase):
             [call("write_file", name=".profile", text="no")],
             [call("finish", report={"answer": "a"})],
         )
-        self.assertFalse((run.directory / ".profile").exists())
+        self.assertFalse((run.output / ".profile").exists())
         self.assertFalse(run.steps[0].ok)
 
     def test_grounding_refuses_a_place_no_tool_returned(self) -> None:

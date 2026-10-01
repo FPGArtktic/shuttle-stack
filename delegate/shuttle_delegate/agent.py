@@ -141,6 +141,20 @@ class Run:
     def directory(self) -> Path:
         return home() / "agents" / self.id
 
+    @property
+    def output(self) -> Path:
+        """What the agent wrote, and nothing else.
+
+        Separate from the directory holding the transcript, because
+        the verifier is pointed at this one. With the two together,
+        `bash -n` was handed the run's own steps.jsonl -- which sorts
+        before two.sh and three.sh -- and bash reads only its first
+        file argument, so the file the agent wrote was never checked
+        and a run that had changed nothing reported itself verified.
+        SHUTTLE's bookkeeping is not the operator's verifier's input.
+        """
+        return self.directory / "out"
+
     def summary(self) -> dict[str, Any]:
         return {
             "run": self.id,
@@ -153,7 +167,7 @@ class Run:
             "tools_used": sorted({one.tool for one in self.steps}),
             "checks": self.checks,
             "report": self.report,
-            "output": str(self.directory),
+            "output": str(self.output),
         }
 
 
@@ -486,8 +500,10 @@ def _verify(run: Run, preset: Preset) -> tuple[bool, str]:
         return False, (
             "podman is not on the path, and the verifier runs in a container"
         )
+    if not run.output.is_dir():
+        return False, "nothing has been written yet; use write_file first"
     produced = sorted(
-        one.name for one in run.directory.iterdir() if one.is_file()
+        one.name for one in run.output.iterdir() if one.is_file()
     )
     if not produced:
         return False, "nothing has been written yet; use write_file first"
@@ -502,7 +518,7 @@ def _verify(run: Run, preset: Preset) -> tuple[bool, str]:
         "--network=none",
         "--read-only",
         "-v",
-        f"{run.directory}:/out:ro",
+        f"{run.output}:/out:ro",
         "-w",
         "/out",
         "--entrypoint",
@@ -538,8 +554,8 @@ def _write_file(run: Run, name: str, text: str) -> tuple[str, bool]:
     safe = Path(name).name
     if not safe or safe.startswith("."):
         return f"{name!r} is not a file name I will write", False
-    run.directory.mkdir(parents=True, exist_ok=True)
-    (run.directory / safe).write_text(text, encoding="utf-8")
+    run.output.mkdir(parents=True, exist_ok=True)
+    (run.output / safe).write_text(text, encoding="utf-8")
     return f"wrote {safe}, {len(text)} characters", True
 
 
