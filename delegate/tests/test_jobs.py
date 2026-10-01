@@ -28,6 +28,7 @@ def broken(**_: object) -> dict:
 class QueueTest(unittest.TestCase):
     def setUp(self) -> None:
         self.queue = Queue()
+        self.addCleanup(self.queue.close)
 
     def test_a_job_is_collected_in_the_tool_s_own_shape(self) -> None:
         job = self.queue.start("summarize_file", answer, {"path": "x"})
@@ -55,32 +56,61 @@ class QueueTest(unittest.TestCase):
     def test_a_failed_job_carries_its_reason(self) -> None:
         job = self.queue.start("extract", broken, {})
         self.queue.wait()
-        self.assertEqual(self.queue.find(job.id).state, FAILED)
+        self.assertEqual(self.queue.status(job.id)["state"], FAILED)
         with self.assertRaises(JobError) as caught:
             self.queue.collect(job.id)
         self.assertIn("could not be done", str(caught.exception))
 
     def test_an_unknown_job_is_refused(self) -> None:
         with self.assertRaises(JobError):
-            self.queue.find("no-such-job")
+            self.queue.status("no-such-job")
 
     def test_a_status_reports_the_time_it_took(self) -> None:
         job = self.queue.start("extract", answer, {})
         self.queue.wait()
-        report = self.queue.find(job.id).report()
+        report = self.queue.status(job.id)
         self.assertIn("seconds", report)
         self.assertIn("waiting", report)
         self.assertEqual(report["tool"], "extract")
 
     def test_only_the_last_few_finished_jobs_are_kept(self) -> None:
         queue = Queue(keep=3)
+        self.addCleanup(queue.close)
         ids = [queue.start("extract", answer, {}).id for _ in range(6)]
         queue.wait()
-        kept = sum(1 for i in ids if i in queue._jobs)
-        self.assertEqual(kept, 3)
-        with self.assertRaises(JobError):
-            queue.find(ids[0])
+        for forgotten in ids[:-3]:
+            with self.assertRaises(JobError):
+                queue.status(forgotten)
+        for kept in ids[-3:]:
+            self.assertEqual(queue.status(kept)["state"], DONE)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SnapshotTest(unittest.TestCase):
+    """A status is taken under the lock, not read off a live job."""
+
+    def test_a_status_is_a_plain_dictionary(self) -> None:
+        queue = Queue()
+        self.addCleanup(queue.close)
+        job = queue.start("extract", answer, {})
+        queue.wait()
+        snapshot = queue.status(job.id)
+        self.assertIsInstance(snapshot, dict)
+        self.assertEqual(snapshot["state"], DONE)
+
+    def test_a_failed_job_always_carries_its_reason(self) -> None:
+        queue = Queue()
+        self.addCleanup(queue.close)
+        job = queue.start("extract", broken, {})
+        queue.wait()
+        snapshot = queue.status(job.id)
+        self.assertEqual(snapshot["state"], FAILED)
+        self.assertIn("could not be done", snapshot["error"])
+
+    def test_closing_twice_is_not_an_error(self) -> None:
+        queue = Queue()
+        queue.close()
+        queue.close()

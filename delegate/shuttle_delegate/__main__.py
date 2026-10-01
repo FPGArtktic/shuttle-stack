@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 
-from .server import mcp
+from .server import QUEUE, mcp
 
 TRANSPORTS = ("stdio", "sse", "streamable-http")
 
@@ -21,7 +21,12 @@ def main() -> None:
         choices=TRANSPORTS,
         help="stdio for a client on this machine (default)",
     )
-    mcp.run(transport=parser.parse_args().transport)
+    try:
+        mcp.run(transport=parser.parse_args().transport)
+    finally:
+        # The job queue holds a worker thread that the interpreter
+        # would otherwise wait for at exit.
+        QUEUE.close()
 
 
 if __name__ == "__main__":

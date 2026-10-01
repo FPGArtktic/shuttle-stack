@@ -98,33 +98,45 @@ def perform(name: str, call: Callable[..., dict], kwargs: dict) -> dict:
     One place, because a job has to be recorded the same way as the
     call that could afford to wait for its answer.
     """
-    chosen = profiles.get(kwargs.get("profile", "long"))
     started = time.time()
+    answered = False
     try:
         result = call(**kwargs)
+        answered = True
+        # The profile that answered, not the one asked for: a cascade
+        # climbs, and capping the report on a server that did no work
+        # contacted the wrong tokeniser and applied the wrong limit.
+        chosen = profiles.get(
+            result.get("profile") or kwargs.get("profile") or "long"
+        )
+        counted = runs.report(
+            servers()[chosen.server].count_tokens,
+            name,
+            kwargs,
+            result,
+            chosen.report_tokens,
+        )
     except Exception as error:
+        # Writing the run file and counting the report both happen after
+        # the model has worked, and both can fail. Without this the call
+        # left no audit line at all, which the house rule forbids.
         audit.log(
             {
                 "tool": name,
                 "args": kwargs,
                 "ok": False,
+                "answered": answered,
                 "seconds": round(time.time() - started, 2),
                 "error": str(error),
             }
         )
         raise
-    counted = runs.report(
-        servers()[chosen.server].count_tokens,
-        name,
-        kwargs,
-        result,
-        chosen.report_tokens,
-    )
     audit.log(
         {
             "tool": name,
             "args": kwargs,
             "ok": True,
+            "profile": chosen.name,
             "seconds": round(time.time() - started, 2),
             "local_tokens": result.get("local_tokens"),
             "run": counted["run"],
@@ -357,7 +369,7 @@ def start_job(tool: str, arguments: dict) -> dict:
 )
 @anticipated
 def get_status(job: str) -> dict:
-    return QUEUE.find(job).report()
+    return QUEUE.status(job)
 
 
 @mcp.tool(

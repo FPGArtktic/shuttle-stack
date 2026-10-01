@@ -111,18 +111,28 @@ class Queue:
         self._pool.submit(self._run, job, call)
         return job
 
-    def find(self, job_id: str) -> Job:
+    def _locked(self, job_id: str) -> Job:
+        """The caller must hold the lock."""
+        if job_id not in self._jobs:
+            raise JobError(
+                f"no job {job_id!r}; the last {self._keep} to finish "
+                "are kept and the rest are forgotten"
+            )
+        return self._jobs[job_id]
+
+    def status(self, job_id: str) -> dict:
+        """A snapshot taken under the lock.
+
+        Handing out the live Job let a reader catch the worker between
+        two assignments and report a failed job with no reason, or a
+        finished one timed to the moment of the poll.
+        """
         with self._lock:
-            if job_id not in self._jobs:
-                raise JobError(
-                    f"no job {job_id!r}; the last {self._keep} to finish "
-                    "are kept and the rest are forgotten"
-                )
-            return self._jobs[job_id]
+            return self._locked(job_id).report()
 
     def collect(self, job_id: str) -> dict:
-        job = self.find(job_id)
         with self._lock:
+            job = self._locked(job_id)
             if job.state in (QUEUED, RUNNING):
                 raise JobError(
                     f"job {job_id} is {job.state}; ask get_status again"
@@ -130,6 +140,16 @@ class Queue:
             if job.state == FAILED:
                 raise JobError(f"job {job_id} failed: {job.error}")
             return (job.result or {}) | job.report()
+
+    def close(self) -> None:
+        """Let go of the worker.
+
+        The pool holds a non-daemon thread and concurrent.futures joins
+        it at exit, so without this the process cannot leave while a
+        job is running: a client that disconnects mid-summary left an
+        orphan talking to the single-slot server for minutes.
+        """
+        self._pool.shutdown(wait=False, cancel_futures=True)
 
     def pending(self) -> int:
         with self._lock:

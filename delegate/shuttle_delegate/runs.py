@@ -77,7 +77,7 @@ def write(tool: str, request: dict, result: dict) -> Run:
         "```",
         "",
     ]
-    run.path.write_text("\n".join(body))
+    run.path.write_text("\n".join(body), encoding="utf-8")
     return run
 
 
@@ -86,21 +86,23 @@ def cap(
 ) -> tuple[str, bool]:
     """Cut the text to the limit, measured by the server's tokeniser.
 
-    The first cut is proportional and the second corrects it, so the
-    result is under the limit after at most three token counts rather
-    than after a search.
+    The cut is proportional, which lands under the limit in one or two
+    counts for ordinary prose, and it repeats until the measurement
+    agrees. Two rounds were not enough: a text denser at the front than
+    at the back keeps its dense part when truncated, so the
+    proportional estimate under-trims every time and the report came
+    back over the limit the project calls its overriding rule. Each
+    round removes at least a quarter of what is left, so the loop ends.
     """
     if limit < 1:
         raise ValueError(f"limit must be positive, got {limit}")
     used = count(text)
     if used <= limit:
         return text, False
-    for _ in range(2):
-        keep = max(1, len(text) * limit // max(used, 1) * 95 // 100)
-        text = text[:keep]
+    while used > limit and len(text) > 1:
+        proportional = len(text) * limit // max(used, 1) * 85 // 100
+        text = text[: max(1, min(proportional, len(text) * 3 // 4))]
         used = count(text)
-        if used <= limit:
-            break
     return text.rstrip() + CUT, True
 
 

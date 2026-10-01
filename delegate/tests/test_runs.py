@@ -132,3 +132,28 @@ class AuditTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GradientTest(unittest.TestCase):
+    """A text denser at the front than the back still gets under."""
+
+    @staticmethod
+    def dense(text: str) -> int:
+        """Half a token per character for the first 2000, then a quarter."""
+        head = min(len(text), 2000)
+        return max(1, head // 2 + (len(text) - head) // 4)
+
+    def test_the_cut_is_repeated_until_the_count_agrees(self) -> None:
+        text = "x" * 22000
+        cut, was_cut = runs.cap(self.dense, text, limit=1000)
+        self.assertTrue(was_cut)
+        body = cut.replace(runs.CUT, "")
+        self.assertLessEqual(self.dense(body), 1000)
+
+    def test_a_steeper_gradient_also_gets_under(self) -> None:
+        def steeper(text: str) -> int:
+            head = min(len(text), 2000)
+            return max(1, head - (len(text) - head) // 4)
+
+        cut, _ = runs.cap(steeper, "y" * 40000, limit=500)
+        self.assertLessEqual(steeper(cut.replace(runs.CUT, "")), 500)

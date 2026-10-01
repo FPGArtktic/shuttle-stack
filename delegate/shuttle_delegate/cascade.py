@@ -61,7 +61,13 @@ def climb(names: Iterable[str], run: Callable[[str], dict]) -> dict:
         if result.get("verified"):
             break
     spent = sum(step["local_tokens"] or 0 for step in history)
-    climbed = result | {"ladder": history, "local_tokens": spent}
+    # The profile that answered is named, so whatever caps and records
+    # the result afterwards reaches the server that did the work.
+    climbed = result | {
+        "ladder": history,
+        "local_tokens": spent,
+        "profile": history[-1]["profile"] if history else "",
+    }
     if not result.get("verified"):
         climbed["escalate"] = True
         climbed["note"] = (

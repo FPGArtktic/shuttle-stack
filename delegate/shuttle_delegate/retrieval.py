@@ -86,7 +86,16 @@ def regions(
             spans[-1][1] = max(spans[-1][1], high)
         else:
             spans.append([low, high])
-    return [Region(low + 1, "\n".join(lines[low:high])) for low, high in spans]
+    # The cap is per match, and merging composed it away: each later
+    # match re-anchored it at its own line, so a pattern matching more
+    # often than once every MAX_REGION_LINES walked a single region to
+    # the end of the file. It is applied again to the merged span.
+    return [
+        Region(
+            low + 1, "\n".join(lines[low : min(high, low + MAX_REGION_LINES)])
+        )
+        for low, high in spans
+    ]
 
 
 def narrow(
