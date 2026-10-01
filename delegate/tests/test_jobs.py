@@ -5,23 +5,25 @@ from __future__ import annotations
 
 import threading
 import unittest
+from collections.abc import Callable
+from typing import Any
 
 from shuttle_delegate.jobs import DONE, FAILED, JobError, Queue
 
 
-def answer(**kwargs: object) -> dict:
+def answer(**kwargs: object) -> dict[str, Any]:
     return {"answer": "done", "saw": kwargs}
 
 
-def slow(gate: threading.Event) -> object:
-    def call(**_: object) -> dict:
+def slow(gate: threading.Event) -> Callable[..., dict[str, Any]]:
+    def call(**_: object) -> dict[str, Any]:
         gate.wait(timeout=5)
         return {"answer": "eventually"}
 
     return call
 
 
-def broken(**_: object) -> dict:
+def broken(**_: object) -> dict[str, Any]:
     raise ValueError("it could not be done")
 
 

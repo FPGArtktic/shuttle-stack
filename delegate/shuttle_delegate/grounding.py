@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 # Short spans are words rather than citations, and matching them proves
 # nothing either way.
@@ -86,8 +87,11 @@ class Grounding:
         """An answer with no quotations is not contradicted by one."""
         return not self.missing
 
-    def report(self) -> dict:
-        entry: dict = {"quotes": self.total, "quotes_grounded": self.grounded}
+    def report(self) -> dict[str, Any]:
+        entry: dict[str, Any] = {
+            "quotes": self.total,
+            "quotes_grounded": self.grounded,
+        }
         if self.missing:
             entry["quotes_not_in_source"] = self.missing
         return entry
@@ -108,7 +112,7 @@ def check(answer: str, source: str) -> Grounding:
 MIN_FIELD = 6
 
 
-def fields_in_source(fields: dict, source: str) -> list[str]:
+def fields_in_source(fields: dict[str, Any], source: str) -> list[str]:
     """Extracted string values the source does not contain.
 
     A number or a boolean is the model's reading of the text rather

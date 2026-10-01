@@ -8,6 +8,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 from shuttle_delegate import sessions
@@ -34,7 +35,13 @@ class FakeServer:
     def count_tokens(self, text: str) -> int:
         return max(1, len(text) // 3)
 
-    def chat(self, prompt: str, n_predict: int, **_: object) -> Completion:
+    def chat(
+        self,
+        prompt: str,
+        n_predict: int,
+        temperature: float | None = None,
+        schema: dict[str, Any] | None = None,
+    ) -> Completion:
         self.prompts.append(prompt)
         return Completion(self.answer, tokens_in=10, tokens_out=4)
 
@@ -70,12 +77,13 @@ class SessionTest(unittest.TestCase):
         self.resolved.append(profile)
         return self.server
 
-    def open(self, **kwargs: object) -> str:
-        return sessions.open_session(
+    def open(self, **kwargs: Any) -> str:
+        opened = sessions.open_session(
             self.server, "long", str(self.doc), **kwargs
-        )["session"]
+        )
+        return str(opened["session"])
 
-    def ask(self, session: str, question: str) -> dict:
+    def ask(self, session: str, question: str) -> dict[str, Any]:
         return sessions.ask(self.resolve, session, question)
 
     def test_opening_reads_the_document_and_keeps_its_cache(self) -> None:
@@ -202,7 +210,7 @@ class SessionTest(unittest.TestCase):
         self,
     ) -> None:
         broken = FakeServer()
-        broken.slot_save = lambda name: (_ for _ in ()).throw(  # type: ignore[assignment]
+        broken.slot_save = lambda name: (_ for _ in ()).throw(  # type: ignore[method-assign]
             RuntimeError("the disk is full")
         )
         with self.assertRaises(RuntimeError):
@@ -215,7 +223,7 @@ class SessionTest(unittest.TestCase):
     ) -> None:
         session = self.open()
         self.doc.write_text(DOCUMENT + "\nmore text here\n")
-        self.server.slot_save = lambda name: (_ for _ in ()).throw(  # type: ignore[assignment]
+        self.server.slot_save = lambda name: (_ for _ in ()).throw(  # type: ignore[method-assign]
             RuntimeError("the disk is full")
         )
         answer = self.ask(session, "after?")

@@ -101,7 +101,9 @@ def anticipated(fn: Callable[..., Any]) -> Callable[..., Any]:
 # The caller gets a report under a hard token limit and the name of the
 # file holding the rest; every call leaves a line in the audit log,
 # whether it answered or failed.
-def perform(name: str, call: Callable[..., dict], kwargs: dict) -> dict:
+def perform(
+    name: str, call: Callable[..., dict[str, Any]], kwargs: dict[str, Any]
+) -> dict[str, Any]:
     """Do the work, cap the report, write the run, log the line.
 
     One place, because a job has to be recorded the same way as the
@@ -156,24 +158,26 @@ def perform(name: str, call: Callable[..., dict], kwargs: dict) -> dict:
 
 # Anything recorded can also be run as a job: the two paths differ only
 # in who waits.
-JOBABLE: dict[str, Callable[..., dict]] = {}
+JOBABLE: dict[str, Callable[..., dict[str, Any]]] = {}
 QUEUE = Queue()
 
 
-def recorded(fn: Callable[..., dict]) -> Callable[..., dict]:
+def recorded(
+    fn: Callable[..., dict[str, Any]],
+) -> Callable[..., dict[str, Any]]:
     JOBABLE[fn.__name__] = fn
 
     @functools.wraps(fn)
-    def wrapper(**kwargs: Any) -> dict:
+    def wrapper(**kwargs: Any) -> dict[str, Any]:
         return perform(fn.__name__, fn, kwargs)
 
     return wrapper
 
 
-def as_job(tool: str) -> Callable[..., dict]:
+def as_job(tool: str) -> Callable[..., dict[str, Any]]:
     inner = JOBABLE[tool]
 
-    def run(**kwargs: Any) -> dict:
+    def run(**kwargs: Any) -> dict[str, Any]:
         return perform(tool, inner, kwargs)
 
     return run
@@ -188,8 +192,8 @@ def backend(profile: str = DEFAULT_PROFILE) -> Backend:
     return Backend(server.endpoint, server.timeout, chosen.temperature)
 
 
-def _describe(server: Backend) -> dict:
-    entry: dict = {
+def _describe(server: Backend) -> dict[str, Any]:
+    entry: dict[str, Any] = {
         "server": f"shuttle-{server.role}",
         "url": server.endpoint.url,
     }
@@ -211,7 +215,7 @@ def _describe(server: Backend) -> dict:
     "fails, or to choose between the two servers."
 )
 @anticipated
-def status() -> dict:
+def status() -> dict[str, Any]:
     # The one tool that reports a failure instead of raising it. Its
     # job is to say what is wrong, and an uninstalled stack is the
     # answer to that question rather than an obstacle to answering it.
@@ -236,7 +240,7 @@ def summarize_file(
     words: int = 200,
     focus: str = "",
     profile: str = "long",
-) -> dict:
+) -> dict[str, Any]:
     return tasks.summarise(
         backend(profile), tasks.read_text(path), words, focus
     )
@@ -271,10 +275,10 @@ def ask_file(
     attempts: int = 2,
     cascade_profiles: str = "",
     profile: str = "long",
-) -> dict:
+) -> dict[str, Any]:
     text = tasks.read_text(path)
 
-    def once(chosen: str) -> dict:
+    def once(chosen: str) -> dict[str, Any]:
         return tasks.ask(
             backend(chosen),
             text,
@@ -305,7 +309,7 @@ def classify_file(
     labels: list[str],
     question: str = "",
     profile: str = "extract",
-) -> dict:
+) -> dict[str, Any]:
     return tasks.classify(
         backend(profile), tasks.read_text(path), labels, question
     )
@@ -328,7 +332,7 @@ def classify_file(
 @recorded
 def extract(
     path: str,
-    schema: dict,
+    schema: dict[str, Any],
     instructions: str = "",
     pattern: str = "",
     until: str = "",
@@ -336,10 +340,10 @@ def extract(
     attempts: int = 2,
     cascade_profiles: str = "",
     profile: str = "extract",
-) -> dict:
+) -> dict[str, Any]:
     text = tasks.read_text(path)
 
-    def once(chosen: str) -> dict:
+    def once(chosen: str) -> dict[str, Any]:
         return tasks.extract(
             backend(chosen),
             text,
@@ -365,7 +369,7 @@ def extract(
     "it. Poll with get_status and collect with get_result."
 )
 @anticipated
-def start_job(tool: str, arguments: dict) -> dict:
+def start_job(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
     if tool not in JOBABLE:
         raise JobError(
             f"{tool!r} cannot be run as a job; the ones that can are "
@@ -380,7 +384,7 @@ def start_job(tool: str, arguments: dict) -> dict:
     "reason here; get_result would only raise it again."
 )
 @anticipated
-def get_status(job: str) -> dict:
+def get_status(job: str) -> dict[str, Any]:
     return QUEUE.status(job)
 
 
@@ -391,7 +395,7 @@ def get_status(job: str) -> dict:
     "rather than an empty answer; ask get_status first."
 )
 @anticipated
-def get_result(job: str) -> dict:
+def get_result(job: str) -> dict[str, Any]:
     return QUEUE.collect(job)
 
 
@@ -414,7 +418,7 @@ def brainstorm(
     until: str = "",
     context: int = 12,
     profile: str = "brainstorm",
-) -> dict:
+) -> dict[str, Any]:
     return tasks.brainstorm(
         backend(profile),
         tasks.read_text(path) if path else "",
@@ -443,7 +447,7 @@ def session_open(
     until: str = "",
     context: int = 12,
     profile: str = "long",
-) -> dict:
+) -> dict[str, Any]:
     return sessions.open_session(
         backend(profile), profile, path, words, pattern, until, context
     )
@@ -460,7 +464,7 @@ def session_open(
     "exactly as in ask_file."
 )
 @anticipated
-def session_ask(session: str, question: str) -> dict:
+def session_ask(session: str, question: str) -> dict[str, Any]:
     return sessions.ask(backend, session, question)
 
 
@@ -471,7 +475,7 @@ def session_ask(session: str, question: str) -> dict:
     ".shuttle/sessions survives and holds every question and answer."
 )
 @anticipated
-def session_close(session: str) -> dict:
+def session_close(session: str) -> dict[str, Any]:
     return sessions.close(backend, session)
 
 
@@ -489,7 +493,7 @@ def index_document(
     path: str,
     collection: str = indexing.COLLECTION,
     heading: str = indexing.HEADING,
-) -> dict:
+) -> dict[str, Any]:
     text = tasks.read_text(path)
     sections, how = indexing.split(text, heading)
     made = indexing.ensure(collection)
@@ -518,7 +522,7 @@ def search_docs(
     collection: str = indexing.COLLECTION,
     limit: int = 3,
     profile: str = DEFAULT_PROFILE,
-) -> dict:
+) -> dict[str, Any]:
     return indexing.search(
         question, collection, limit, backend(profile).count_tokens
     )
@@ -530,5 +534,5 @@ def search_docs(
     "something is worth indexing again, or at all."
 )
 @anticipated
-def list_indexed_docs(collection: str = indexing.COLLECTION) -> dict:
+def list_indexed_docs(collection: str = indexing.COLLECTION) -> dict[str, Any]:
     return indexing.indexed(collection)

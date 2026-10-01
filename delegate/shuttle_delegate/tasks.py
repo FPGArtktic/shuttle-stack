@@ -12,8 +12,9 @@ import json
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-from .backend import Backend, Completion
+from .backend import Completion, Server
 from .chunking import chunk
 from .documents import is_document
 from .documents import read as read_document
@@ -132,7 +133,7 @@ class Work:
         self.truncated = self.truncated or answer.truncated
         return answer.content
 
-    def report(self) -> dict:
+    def report(self) -> dict[str, Any]:
         return {
             "local_calls": self.calls,
             "local_tokens": self.tokens,
@@ -157,7 +158,7 @@ def read_text(path: str) -> str:
     return text
 
 
-def fit(backend: Backend, text: str, n_predict: int) -> list[str]:
+def fit(backend: Server, text: str, n_predict: int) -> list[str]:
     """Cut the text into pieces the server will accept.
 
     The character estimate is checked against the server's own
@@ -227,8 +228,8 @@ def _clause(prefix: str, value: str) -> str:
 
 
 def summarise(
-    backend: Backend, text: str, words: int = 200, focus: str = ""
-) -> dict:
+    backend: Server, text: str, words: int = 200, focus: str = ""
+) -> dict[str, Any]:
     """Summarise, folding the parts together until one remains."""
     if words < 10:
         raise TaskError(f"words must be at least 10, got {words}")
@@ -296,7 +297,7 @@ def _answered(text: str) -> bool:
 
 
 def _parts(
-    backend: Backend,
+    backend: Server,
     work: Work,
     chunks: list[str],
     question: str,
@@ -325,7 +326,7 @@ def _parts(
 
 
 def _join(
-    backend: Backend,
+    backend: Server,
     work: Work,
     answers: list[str],
     question: str,
@@ -367,7 +368,7 @@ def _join(
 
 
 def ask(
-    backend: Backend,
+    backend: Server,
     text: str,
     question: str,
     words: int = 200,
@@ -375,7 +376,7 @@ def ask(
     context: int = CONTEXT_LINES,
     until: str = "",
     attempts: int = 2,
-) -> dict:
+) -> dict[str, Any]:
     """Answer a question from a file, part by part if it is long.
 
     A pattern narrows the file first. Locating a passage is exact work
@@ -470,14 +471,14 @@ def ask(
 
 
 def brainstorm(
-    backend: Backend,
+    backend: Server,
     text: str,
     question: str,
     count: int = 5,
     pattern: str = "",
     context: int = CONTEXT_LINES,
     until: str = "",
-) -> dict:
+) -> dict[str, Any]:
     """Ask for several options, and say that they are only options.
 
     This is the one task here with nothing to verify against. The
@@ -522,7 +523,7 @@ def brainstorm(
     return result
 
 
-def _decode(content: str, what: str) -> dict:
+def _decode(content: str, what: str) -> dict[str, Any]:
     try:
         value = json.loads(content)
     except json.JSONDecodeError as error:
@@ -535,8 +536,8 @@ def _decode(content: str, what: str) -> dict:
 
 
 def classify(
-    backend: Backend, text: str, labels: list[str], question: str = ""
-) -> dict:
+    backend: Server, text: str, labels: list[str], question: str = ""
+) -> dict[str, Any]:
     """Put the text in one of the given labels, voting across chunks."""
     clean = [label.strip() for label in labels if label.strip()]
     if len(clean) < 2:
@@ -573,15 +574,15 @@ def classify(
 
 
 def extract(
-    backend: Backend,
+    backend: Server,
     text: str,
-    schema: dict,
+    schema: dict[str, Any],
     instructions: str = "",
     pattern: str = "",
     context: int = CONTEXT_LINES,
     until: str = "",
     attempts: int = 2,
-) -> dict:
+) -> dict[str, Any]:
     """Pull structured fields out of a text that fits in one go.
 
     A pattern narrows the file first, which is what makes this usable
@@ -613,7 +614,7 @@ def extract(
         instructions=_clause("", instructions), text=chunks[0]
     )
     work = Work()
-    fields: dict = {}
+    fields: dict[str, Any] = {}
     missing: list[str] = []
     tried = 0
     for temperature in temperatures(attempts):

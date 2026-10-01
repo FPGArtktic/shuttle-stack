@@ -7,6 +7,7 @@ import json
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from typing import Any, Protocol
 
 from .config import Endpoint
 
@@ -32,6 +33,48 @@ class Completion:
         return self.tokens_in + self.tokens_out
 
 
+class Server(Protocol):
+    """What a pipeline needs of an inference server.
+
+    The tasks are written against this and not against Backend. A
+    summary needs a tokeniser, a context size and a way to ask once;
+    it has no business being handed something that can also delete a
+    KV dump, and a test of a prompt has no business starting an HTTP
+    server to check it.
+    """
+
+    @property
+    def role(self) -> str: ...
+
+    def context_size(self) -> int: ...
+
+    def count_tokens(self, text: str) -> int: ...
+
+    def chat(
+        self,
+        prompt: str,
+        n_predict: int,
+        temperature: float | None = ...,
+        schema: dict[str, Any] | None = ...,
+    ) -> Completion: ...
+
+
+class Cache(Server, Protocol):
+    """A server whose KV cache can be named, kept and dropped.
+
+    Only sessions need this much; it is separate so that nothing else
+    can reach the dumps by accident.
+    """
+
+    def slot_save(self, name: str) -> int: ...
+
+    def slot_restore(self, name: str) -> int: ...
+
+    def cached(self, name: str) -> bool: ...
+
+    def forget(self, name: str) -> None: ...
+
+
 class Backend:
     def __init__(
         self,
@@ -48,8 +91,8 @@ class Backend:
         return self.endpoint.role
 
     def _request(
-        self, path: str, payload: dict | None, timeout: float
-    ) -> dict:
+        self, path: str, payload: dict[str, Any] | None, timeout: float
+    ) -> dict[str, Any]:
         data = None if payload is None else json.dumps(payload).encode()
         request = urllib.request.Request(
             self.endpoint.url + path,
@@ -59,7 +102,7 @@ class Backend:
         )
         try:
             with urllib.request.urlopen(request, timeout=timeout) as answer:
-                return json.loads(answer.read())
+                parsed = json.loads(answer.read())
         except urllib.error.HTTPError as error:
             body = error.read().decode(errors="replace")[:400]
             raise BackendError(
@@ -70,6 +113,12 @@ class Backend:
                 f"shuttle-{self.role} {path}: {error}; check "
                 f"'systemctl --user status shuttle-{self.role}.service'"
             ) from error
+        if not isinstance(parsed, dict):
+            raise BackendError(
+                f"shuttle-{self.role} {path}: expected a JSON object, "
+                f"got {type(parsed).__name__}"
+            )
+        return parsed
 
     def healthy(self) -> bool:
         try:
@@ -78,7 +127,7 @@ class Backend:
             return False
         return True
 
-    def props(self) -> dict:
+    def props(self) -> dict[str, Any]:
         return self._request("/props", None, HEALTH_TIMEOUT)
 
     def context_size(self) -> int:
@@ -94,7 +143,7 @@ class Backend:
         prompt: str,
         n_predict: int,
         temperature: float | None = None,
-        schema: dict | None = None,
+        schema: dict[str, Any] | None = None,
     ) -> Completion:
         """Ask once, through the template the model was trained on.
 
@@ -102,7 +151,7 @@ class Backend:
         a budget spent on reasoning is a budget not spent on the answer.
         Left on, a short n_predict returns an empty string.
         """
-        payload: dict = {
+        payload: dict[str, Any] = {
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": n_predict,
             "temperature": (

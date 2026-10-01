@@ -23,6 +23,7 @@ import urllib.request
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from .chunking import chunk
 from .documents import MARKER
@@ -80,7 +81,9 @@ class Section:
         return str(uuid.uuid5(NAMESPACE, f"{file}|{self.page}|{order}"))
 
 
-def _post(url: str, body: dict | None, method: str = "POST") -> dict:
+def _post(
+    url: str, body: dict[str, Any] | None, method: str = "POST"
+) -> dict[str, Any]:
     data = None if body is None else json.dumps(body).encode()
     request = urllib.request.Request(
         url,
@@ -90,7 +93,7 @@ def _post(url: str, body: dict | None, method: str = "POST") -> dict:
     )
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT) as answer:
-            return json.loads(answer.read())
+            parsed = json.loads(answer.read())
     except urllib.error.HTTPError as error:
         raise IndexingError(
             f"{url}: HTTP {error.code}: "
@@ -98,6 +101,11 @@ def _post(url: str, body: dict | None, method: str = "POST") -> dict:
         ) from error
     except (urllib.error.URLError, TimeoutError, OSError) as error:
         raise IndexingError(f"{url}: {error}") from error
+    if not isinstance(parsed, dict):
+        raise IndexingError(
+            f"{url}: expected a JSON object, got {type(parsed).__name__}"
+        )
+    return parsed
 
 
 def embed(texts: list[str]) -> list[list[float]]:
@@ -136,7 +144,8 @@ def split(text: str, heading: str = HEADING) -> tuple[list[Section], str]:
 
     found: list[Section] = []
     page = 0
-    at_page, heading_text, held = 0, "preamble", []
+    at_page, heading_text = 0, "preamble"
+    held: list[str] = []
 
     def close() -> None:
         if held:
@@ -248,7 +257,7 @@ def store(collection: str, file: str, sections: list[Section]) -> int:
     return len(points)
 
 
-def _trim(answer: dict, count: Count, budget: int) -> dict:
+def _trim(answer: dict[str, Any], count: Count, budget: int) -> dict[str, Any]:
     """Shorten the excerpts until the whole answer fits the budget.
 
     The whole answer, not the hits alone: the collection name and the
@@ -278,7 +287,7 @@ def search(
     limit: int = 3,
     count: Count | None = None,
     budget: int = SEARCH_TOKENS,
-) -> dict:
+) -> dict[str, Any]:
     """The sections closest to the question, with where each came from.
 
     With a tokeniser the excerpts are trimmed to the budget; without
@@ -320,7 +329,7 @@ def search(
     )
 
 
-def indexed(collection: str = COLLECTION) -> dict:
+def indexed(collection: str = COLLECTION) -> dict[str, Any]:
     """Which documents are in the collection, and how much of each."""
     if collection not in collections():
         return {"collection": collection, "documents": [], "exists": False}
@@ -328,7 +337,7 @@ def indexed(collection: str = COLLECTION) -> dict:
     pages: dict[str, int] = {}
     offset = None
     while True:
-        body: dict = {"limit": 256, "with_payload": ["file", "page"]}
+        body: dict[str, Any] = {"limit": 256, "with_payload": ["file", "page"]}
         if offset is not None:
             body["offset"] = offset
         answer = _post(

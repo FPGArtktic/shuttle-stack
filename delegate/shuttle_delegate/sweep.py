@@ -22,6 +22,7 @@ from pathlib import Path
 from . import indexing
 from .config import config_home
 from .documents import SUFFIXES as DOCUMENT_SUFFIXES
+from .indexing import Count
 from .runs import home
 
 NAME = "sweep.toml"
@@ -232,7 +233,7 @@ def _lines(report: Report) -> list[str]:
     return out
 
 
-def write_report(report: Report, count=None) -> Path:
+def write_report(report: Report, count: Count | None = None) -> Path:
     """Leave the report where the morning can find it.
 
     Failures are listed before successes, and the list is cut before

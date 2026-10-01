@@ -17,6 +17,7 @@ caller names the order and the README gives the numbers.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from typing import Any
 
 from .profiles import get
 
@@ -38,7 +39,7 @@ def ladder(spec: str) -> list[str]:
     return names
 
 
-def _step(profile: str, result: dict) -> dict:
+def _step(profile: str, result: dict[str, Any]) -> dict[str, Any]:
     return {
         "profile": profile,
         "verified": bool(result.get("verified")),
@@ -47,14 +48,16 @@ def _step(profile: str, result: dict) -> dict:
     }
 
 
-def climb(names: Iterable[str], run: Callable[[str], dict]) -> dict:
+def climb(
+    names: Iterable[str], run: Callable[[str], dict[str, Any]]
+) -> dict[str, Any]:
     """Ask each profile until one verifies its answer.
 
     The tokens reported are the whole climb rather than its last step,
     because that is what the machine spent.
     """
-    history: list[dict] = []
-    result: dict = {}
+    history: list[dict[str, Any]] = []
+    result: dict[str, Any] = {}
     for profile in names:
         result = run(profile)
         history.append(_step(profile, result))

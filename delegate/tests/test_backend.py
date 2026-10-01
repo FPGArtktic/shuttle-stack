@@ -7,11 +7,12 @@ import json
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import Any
 
 from shuttle_delegate.backend import Backend, BackendError
 from shuttle_delegate.config import Endpoint
 
-ANSWERS = {
+ANSWERS: dict[str, dict[str, Any]] = {
     "/v1/chat/completions": {
         "choices": [
             {
@@ -26,7 +27,7 @@ ANSWERS = {
 }
 
 
-SENT: dict = {}
+SENT: dict[str, Any] = {}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -55,6 +56,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class BackendTest(unittest.TestCase):
+    server: HTTPServer
+    thread: threading.Thread
+    backend: Backend
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.server = HTTPServer(("127.0.0.1", 0), Handler)
@@ -62,8 +67,9 @@ class BackendTest(unittest.TestCase):
             target=cls.server.serve_forever, daemon=True
         )
         cls.thread.start()
-        host, port = cls.server.server_address[:2]
-        cls.backend = Backend(Endpoint("fast", f"http://{host}:{port}"))
+        cls.backend = Backend(
+            Endpoint("fast", f"http://127.0.0.1:{cls.server.server_port}")
+        )
 
     @classmethod
     def tearDownClass(cls) -> None:

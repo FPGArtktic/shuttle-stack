@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 from shuttle_delegate import documents
@@ -24,7 +25,9 @@ ANSWER = {
 }
 
 
-def done(stdout: str = "", stderr: str = "", code: int = 0):
+def done(
+    stdout: str = "", stderr: str = "", code: int = 0
+) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(["podman"], code, stdout, stderr)
 
 
@@ -43,7 +46,7 @@ class PagesTest(unittest.TestCase):
         self.file = Path(self.dir.name) / "doc.pdf"
         self.file.write_bytes(b"%PDF-1.4\n")
 
-    def run_with(self, result):
+    def run_with(self, result: subprocess.CompletedProcess[str]) -> Any:
         patch = mock.patch.object(subprocess, "run", return_value=result)
         self.addCleanup(patch.stop)
         return patch.start()

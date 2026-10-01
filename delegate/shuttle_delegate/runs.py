@@ -16,6 +16,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 REPORT_TOKENS = 1000
 LONG_KEYS = ("answer", "summary")
@@ -51,7 +52,7 @@ def new_id(tool: str) -> str:
     return f"{stamp}-{tool}-{secrets.token_hex(3)}"
 
 
-def write(tool: str, request: dict, result: dict) -> Run:
+def write(tool: str, request: dict[str, Any], result: dict[str, Any]) -> Run:
     """Keep the request and the whole result, in that order."""
     run_id = new_id(tool)
     run = Run(run_id, home() / "runs" / f"{run_id}.md")
@@ -109,10 +110,10 @@ def cap(
 def report(
     count: Callable[[str], int],
     tool: str,
-    request: dict,
-    result: dict,
+    request: dict[str, Any],
+    result: dict[str, Any],
     limit: int = REPORT_TOKENS,
-) -> dict:
+) -> dict[str, Any]:
     """The capped result, with the run file that holds the rest."""
     run = write(tool, request, result)
     capped = dict(result)

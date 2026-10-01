@@ -9,9 +9,14 @@ set -Eeuo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/../delegate"
 
-if ! type -P uv > /dev/null; then
-	printf 'delegate: uv not found; it builds the test environment\n' >&2
+die()
+{
+	printf 'delegate: %s\n' "$*" >&2
 	exit 1
+}
+
+if ! type -P uv > /dev/null; then
+	die "uv not found; it builds the test environment"
 fi
 
 # SHUTTLE_PYTHON pins the interpreter, so CI can run the same script
@@ -28,6 +33,14 @@ fi
 # in the scratch worktree of tests/commits.sh stops the next checkout.
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
+
+# mypy is what the type hints are for.  It runs from the same locked
+# environment as the tests, so it sees the installed mcp package and
+# checks the delegate against the real signatures rather than against
+# stubs it had to guess.
+uv run --quiet "${pin[@]}" mypy shuttle_delegate tests ||
+	die "mypy shuttle_delegate tests"
+printf 'delegate: mypy: ok\n'
 
 XDG_CONFIG_HOME=$scratch SHUTTLE_HOME=$scratch/state \
 	uv run --quiet "${pin[@]}" python -m unittest discover -s tests -t . "$@"

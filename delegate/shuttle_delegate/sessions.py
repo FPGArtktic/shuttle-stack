@@ -20,8 +20,9 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-from .backend import Backend
+from .backend import Cache
 from .grounding import check
 from .retrieval import narrow
 from .runs import home, new_id
@@ -39,7 +40,7 @@ nothing else: NOT IN THIS TEXT
 Do not answer from anything you know outside the text.
 
 """
-Resolve = Callable[[str], Backend]
+Resolve = Callable[[str], Cache]
 MISSING = "NOT IN THIS TEXT"
 DUMP = "{session}.bin"
 # An id reaches both a file name and the server's slot-save path, so it
@@ -88,14 +89,14 @@ def fingerprint(prefix: str) -> str:
     return hashlib.sha256(prefix.encode()).hexdigest()[:32]
 
 
-def _append(session: str, entry: dict) -> None:
+def _append(session: str, entry: dict[str, Any]) -> None:
     path = transcript(session)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as sink:
         sink.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
-def _lines(session: str) -> list[dict]:
+def _lines(session: str) -> list[dict[str, Any]]:
     path = transcript(session)
     if not path.is_file():
         raise SessionError(
@@ -130,7 +131,7 @@ def build_prefix(
     return PREFIX.format(text=text, words=words)
 
 
-def _header(session: str) -> dict:
+def _header(session: str) -> dict[str, Any]:
     head = _lines(session)[0]
     if head.get("kind") != "open":
         raise SessionError(f"session {session!r} has no opening line")
@@ -146,7 +147,7 @@ def _latest_fingerprint(session: str) -> str:
     return seen
 
 
-def _must_fit(server: Backend, opened: Opened) -> int:
+def _must_fit(server: Cache, opened: Opened) -> int:
     """Refuse a document the server cannot hold, and say by how much.
 
     llama-server answers an oversized prompt with an HTTP 400, which
@@ -166,7 +167,7 @@ def _must_fit(server: Backend, opened: Opened) -> int:
     return needed
 
 
-def _prime(server: Backend, opened: Opened) -> int:
+def _prime(server: Cache, opened: Opened) -> int:
     """Read the document once and keep its cache for the next question."""
     _must_fit(server, opened)
     server.chat(opened.prefix + "QUESTION: are you ready?", 1)
@@ -174,14 +175,14 @@ def _prime(server: Backend, opened: Opened) -> int:
 
 
 def open_session(
-    server: Backend,
+    server: Cache,
     profile: str,
     path: str,
     words: int = 200,
     pattern: str = "",
     until: str = "",
     context: int = 12,
-) -> dict:
+) -> dict[str, Any]:
     """Read a document and keep its cache under a name.
 
     The profile is recorded, because every later question has to reach
@@ -245,7 +246,7 @@ def _reopen(session: str) -> Opened:
     )
 
 
-def ask(resolve: Resolve, session: str, question: str) -> dict:
+def ask(resolve: Resolve, session: str, question: str) -> dict[str, Any]:
     """Ask the open document, reusing its cache where it still fits.
 
     The server comes from the session rather than from the caller. A
@@ -301,7 +302,7 @@ def ask(resolve: Resolve, session: str, question: str) -> dict:
     return report
 
 
-def close(resolve: Resolve, session: str) -> dict:
+def close(resolve: Resolve, session: str) -> dict[str, Any]:
     """Drop the cache and leave the transcript.
 
     On the session's own server: forgetting a dump on the other one

@@ -8,6 +8,9 @@ requires-python = ">=3.11"
 license = "GPL-3.0-only"
 dependencies = ["mcp>=2.2"]
 
+[dependency-groups]
+dev = ["mypy>=1.18"]
+
 [project.scripts]
 shuttle-delegate = "shuttle_delegate.__main__:main"
 shuttle-sweep = "shuttle_delegate.sweep:main"
@@ -24,3 +27,7 @@ line-length = 79
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "RET", "C4"]
+
+[tool.mypy]
+strict = true
+

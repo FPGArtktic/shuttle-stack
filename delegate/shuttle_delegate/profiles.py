@@ -13,12 +13,13 @@ from __future__ import annotations
 import tomllib
 from dataclasses import dataclass, fields
 from pathlib import Path
+from typing import Any
 
 from .config import ROLES, config_home
 
 NAME = "profiles.toml"
 
-BUILT_IN: dict[str, dict] = {
+BUILT_IN: dict[str, dict[str, Any]] = {
     "long": {"server": "long", "temperature": 0.2},
     "fast": {"server": "fast", "temperature": 0.2},
     # Schema-bound work wants no sampling: there is one right shape and
@@ -65,7 +66,7 @@ def path() -> Path:
     return config_home() / "shuttle" / NAME
 
 
-def _build(name: str, values: dict) -> Profile:
+def _build(name: str, values: dict[str, Any]) -> Profile:
     known = {field.name for field in fields(Profile)} - {"name"}
     unknown = set(values) - known
     if unknown:

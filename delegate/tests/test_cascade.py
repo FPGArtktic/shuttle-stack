@@ -4,26 +4,31 @@
 from __future__ import annotations
 
 import unittest
+from typing import Any
 
 from shuttle_delegate.cascade import CascadeError, climb, ladder
 from shuttle_delegate.profiles import ProfileError
 
 
-def answers(**verdicts: bool):
-    """A run that verifies on the profiles named true."""
-    seen: list[str] = []
+class answers:  # noqa: N801
+    """A run that verifies on the profiles named true.
 
-    def run(profile: str) -> dict:
-        seen.append(profile)
+    It remembers the profiles it was asked for, which is what the
+    climb is judged on.
+    """
+
+    def __init__(self, **verdicts: bool) -> None:
+        self.verdicts = verdicts
+        self.seen: list[str] = []
+
+    def __call__(self, profile: str) -> dict[str, Any]:
+        self.seen.append(profile)
         return {
             "answer": f"from {profile}",
-            "verified": verdicts.get(profile, False),
+            "verified": self.verdicts.get(profile, False),
             "attempts": 1,
             "local_tokens": 100,
         }
-
-    run.seen = seen  # type: ignore[attr-defined]
-    return run
 
 
 class LadderTest(unittest.TestCase):

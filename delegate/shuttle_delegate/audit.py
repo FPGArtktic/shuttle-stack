@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import json
 import time
+from typing import Any
 
 from .runs import home
 
 NAME = "audit.jsonl"
 
 
-def log(entry: dict) -> None:
+def log(entry: dict[str, Any]) -> None:
     """Append one record. A failure to log is not a failure to answer."""
     path = home() / NAME
     line = json.dumps(

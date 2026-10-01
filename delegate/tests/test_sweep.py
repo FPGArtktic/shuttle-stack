@@ -8,6 +8,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 from shuttle_delegate import indexing, sweep
@@ -90,7 +91,7 @@ class RunTest(unittest.TestCase):
         self.doc.write_text("## One\nalpha\n")
         self.chosen = Settings(roots=(self.root,), collection="probe")
 
-    def indexing_that(self, sections: int = 3):
+    def indexing_that(self, sections: int = 3) -> tuple[Any, ...]:
         return (
             mock.patch.object(
                 indexing, "split", return_value=([mock.Mock()], "headings")
@@ -144,7 +145,7 @@ class RunTest(unittest.TestCase):
         (self.root / "b.md").write_text("## Two\nbeta\n")
         calls = {"n": 0}
 
-        def sometimes(*_args, **_kwargs):
+        def sometimes(*_args: Any, **_kwargs: Any) -> int:
             calls["n"] += 1
             if calls["n"] == 1:
                 raise RuntimeError("that one is broken")

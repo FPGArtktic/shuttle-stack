@@ -7,6 +7,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 from shuttle_delegate.backend import Completion
 from shuttle_delegate.tasks import (
@@ -33,7 +34,7 @@ class FakeBackend:
         self._n_ctx = n_ctx
         self._answers = answers
         self.prompts: list[str] = []
-        self.schemas: list[dict | None] = []
+        self.schemas: list[dict[str, Any] | None] = []
         self.temperatures: list[float | None] = []
 
     def context_size(self) -> int:
@@ -47,7 +48,7 @@ class FakeBackend:
         prompt: str,
         n_predict: int,
         temperature: float | None = None,
-        schema: dict | None = None,
+        schema: dict[str, Any] | None = None,
     ) -> Completion:
         self.prompts.append(prompt)
         self.schemas.append(schema)
@@ -125,9 +126,9 @@ class ClassifyTest(unittest.TestCase):
     def test_the_labels_are_enforced_by_a_schema(self) -> None:
         backend = FakeBackend(answers=self.answer("bug"))
         classify(backend, "a short report.", self.labels)
-        self.assertEqual(
-            backend.schemas[0]["properties"]["label"]["enum"], self.labels
-        )
+        schema = backend.schemas[0]
+        assert schema is not None
+        self.assertEqual(schema["properties"]["label"]["enum"], self.labels)
 
     def test_a_split_vote_is_reported_not_hidden(self) -> None:
         answers = ["bug", "bug", "feature"]
@@ -236,6 +237,7 @@ class BrainstormTest(unittest.TestCase):
         backend = FakeBackend(answers=self.ideas("one"))
         brainstorm(backend, "", self.REQUEST)
         schema = backend.schemas[0]
+        assert schema is not None
         self.assertEqual(schema["properties"]["ideas"]["type"], "array")
 
     def test_a_file_is_considered_when_given(self) -> None:

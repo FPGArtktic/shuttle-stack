@@ -22,6 +22,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from typing import Any
 
 from .runs import new_id
 
@@ -42,15 +43,15 @@ class Job:
 
     id: str
     tool: str
-    arguments: dict
+    arguments: dict[str, Any]
     state: str = QUEUED
     queued_at: float = field(default_factory=time.time)
     started_at: float = 0.0
     finished_at: float = 0.0
-    result: dict | None = None
+    result: dict[str, Any] | None = None
     error: str = ""
 
-    def report(self) -> dict:
+    def report(self) -> dict[str, Any]:
         now = time.monotonic()
         entry = {
             "job": self.id,
@@ -87,7 +88,7 @@ class Queue:
         for job in oldest_first[: -self._keep]:
             del self._jobs[job.id]
 
-    def _run(self, job: Job, call: Callable[..., dict]) -> None:
+    def _run(self, job: Job, call: Callable[..., dict[str, Any]]) -> None:
         with self._lock:
             job.state = RUNNING
             job.started_at = time.monotonic()
@@ -107,7 +108,10 @@ class Queue:
             self._forget_old()
 
     def start(
-        self, tool: str, call: Callable[..., dict], arguments: dict
+        self,
+        tool: str,
+        call: Callable[..., dict[str, Any]],
+        arguments: dict[str, Any],
     ) -> Job:
         job = Job(new_id(tool), tool, dict(arguments))
         with self._lock:
@@ -125,7 +129,7 @@ class Queue:
             )
         return self._jobs[job_id]
 
-    def status(self, job_id: str) -> dict:
+    def status(self, job_id: str) -> dict[str, Any]:
         """A snapshot taken under the lock.
 
         Handing out the live Job let a reader catch the worker between
@@ -135,7 +139,7 @@ class Queue:
         with self._lock:
             return self._locked(job_id).report()
 
-    def collect(self, job_id: str) -> dict:
+    def collect(self, job_id: str) -> dict[str, Any]:
         with self._lock:
             job = self._locked(job_id)
             if job.state in (QUEUED, RUNNING):
