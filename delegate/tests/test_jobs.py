@@ -85,10 +85,6 @@ class QueueTest(unittest.TestCase):
             self.assertEqual(queue.status(kept)["state"], DONE)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class SnapshotTest(unittest.TestCase):
     """A status is taken under the lock, not read off a live job."""
 
@@ -114,3 +110,7 @@ class SnapshotTest(unittest.TestCase):
         queue = Queue()
         queue.close()
         queue.close()
+
+
+if __name__ == "__main__":
+    unittest.main()

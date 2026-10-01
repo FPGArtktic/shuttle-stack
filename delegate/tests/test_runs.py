@@ -130,10 +130,6 @@ class AuditTest(unittest.TestCase):
         audit.log({"tool": "ask_file"})
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class GradientTest(unittest.TestCase):
     """A text denser at the front than the back still gets under."""
 
@@ -157,3 +153,7 @@ class GradientTest(unittest.TestCase):
 
         cut, _ = runs.cap(steeper, "y" * 40000, limit=500)
         self.assertLessEqual(steeper(cut.replace(runs.CUT, "")), 500)
+
+
+if __name__ == "__main__":
+    unittest.main()

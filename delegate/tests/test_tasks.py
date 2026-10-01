@@ -168,10 +168,6 @@ class ExtractTest(unittest.TestCase):
             extract(FakeBackend(), "text", {"type": "array"})
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class AskTest(unittest.TestCase):
     QUESTION = "what does the phase do?"
 
@@ -438,3 +434,7 @@ class DensityTest(unittest.TestCase):
         backend = Dense(n_ctx=2000)
         fit(backend, text, 200)
         self.assertGreater(len(counted), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

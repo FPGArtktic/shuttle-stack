@@ -92,10 +92,6 @@ class CheckTest(unittest.TestCase):
         self.assertIn("quotes_not_in_source", bad.report())
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ContinuationTest(unittest.TestCase):
     """A line that wraps is still one line."""
 
@@ -192,3 +188,7 @@ class FieldShapeTest(unittest.TestCase):
 
     def test_numbers_are_still_left_alone(self) -> None:
         self.assertEqual(fields_in_source({"port": 8081}, self.SOURCE), [])
+
+
+if __name__ == "__main__":
+    unittest.main()

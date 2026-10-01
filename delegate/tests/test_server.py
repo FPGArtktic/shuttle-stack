@@ -62,10 +62,6 @@ class SurfaceTest(unittest.TestCase):
             backend("no-such-profile")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ToolErrorTest(unittest.TestCase):
     """A failure the caller can act on must reach it as a message.
 
@@ -116,6 +112,10 @@ class ToolErrorTest(unittest.TestCase):
                 fields = tool.input_schema["properties"]
                 self.assertIn("profile", fields)
                 self.assertNotIn("server", fields)
+
+
+if __name__ == "__main__":
+    unittest.main()
 
 
 if __name__ == "__main__":

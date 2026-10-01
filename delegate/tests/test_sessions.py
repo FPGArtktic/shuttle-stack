@@ -173,10 +173,6 @@ class SessionTest(unittest.TestCase):
                 pattern="absent-from-the-file",
             )
 
-
-if __name__ == "__main__":
-    unittest.main()
-
     def test_the_session_names_the_profile_it_was_opened_on(self) -> None:
         session = sessions.open_session(self.server, "extract", str(self.doc))[
             "session"
@@ -225,3 +221,7 @@ if __name__ == "__main__":
         answer = self.ask(session, "after?")
         self.assertTrue(answer["found"])
         self.assertFalse(answer["cache_rebuilt"])
+
+
+if __name__ == "__main__":
+    unittest.main()

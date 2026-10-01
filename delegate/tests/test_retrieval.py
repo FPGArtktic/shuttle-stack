@@ -58,10 +58,6 @@ class NarrowTest(unittest.TestCase):
         self.assertLess(len(text), len(TEXT))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class BoundaryTest(unittest.TestCase):
     """A region that stops where the caller says it stops."""
 
@@ -97,3 +93,7 @@ class BoundaryTest(unittest.TestCase):
         self.assertEqual(count, 1)
         self.assertIn("and more", text)
         self.assertNotIn("three", text)
+
+
+if __name__ == "__main__":
+    unittest.main()
