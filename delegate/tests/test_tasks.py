@@ -12,6 +12,7 @@ from shuttle_delegate.backend import Completion
 from shuttle_delegate.tasks import (
     TaskError,
     ask,
+    brainstorm,
     classify,
     extract,
     read_text,
@@ -212,3 +213,50 @@ class AskTest(unittest.TestCase):
         with self.assertRaises(TaskError) as caught:
             ask(FakeBackend(n_ctx=1200), "text", self.QUESTION)
         self.assertIn("no room", str(caught.exception))
+
+
+class BrainstormTest(unittest.TestCase):
+    REQUEST = "ways to test the installer without a GPU"
+
+    def ideas(self, *ideas: str) -> str:
+        return json.dumps({"ideas": list(ideas)})
+
+    def test_the_options_come_back_as_a_list(self) -> None:
+        backend = FakeBackend(answers=self.ideas("one", "two", "three"))
+        result = brainstorm(backend, "", self.REQUEST, count=3)
+        self.assertEqual(result["ideas"], ["one", "two", "three"])
+
+    def test_it_says_that_nothing_was_verified(self) -> None:
+        backend = FakeBackend(answers=self.ideas("one"))
+        result = brainstorm(backend, "", self.REQUEST)
+        self.assertFalse(result["grounded"])
+        self.assertIn("not findings", result["note"])
+
+    def test_the_shape_is_fixed_by_a_schema(self) -> None:
+        backend = FakeBackend(answers=self.ideas("one"))
+        brainstorm(backend, "", self.REQUEST)
+        schema = backend.schemas[0]
+        self.assertEqual(schema["properties"]["ideas"]["type"], "array")
+
+    def test_a_file_is_considered_when_given(self) -> None:
+        backend = FakeBackend(answers=self.ideas("one"))
+        brainstorm(backend, "a document about ports.", self.REQUEST)
+        self.assertIn("a document about ports.", backend.prompts[0])
+
+    def test_without_a_file_nothing_is_quoted_at_it(self) -> None:
+        backend = FakeBackend(answers=self.ideas("one"))
+        brainstorm(backend, "", self.REQUEST)
+        self.assertNotIn("TEXT:", backend.prompts[0])
+
+    def test_an_empty_request_is_refused(self) -> None:
+        with self.assertRaises(TaskError):
+            brainstorm(FakeBackend(), "", "  ")
+
+    def test_an_absurd_count_is_refused(self) -> None:
+        with self.assertRaises(TaskError):
+            brainstorm(FakeBackend(), "", self.REQUEST, count=99)
+
+    def test_no_ideas_at_all_is_an_error(self) -> None:
+        backend = FakeBackend(answers=json.dumps({"ideas": []}))
+        with self.assertRaises(TaskError):
+            brainstorm(backend, "", self.REQUEST)

@@ -16,6 +16,7 @@ JOBLESS = {"status", "start_job", "get_status", "get_result"}
 
 EXPECTED = {
     "status",
+    "brainstorm",
     "start_job",
     "get_status",
     "get_result",

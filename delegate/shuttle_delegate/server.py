@@ -334,3 +334,34 @@ def get_status(job: str) -> dict:
 @anticipated
 def get_result(job: str) -> dict:
     return QUEUE.collect(job)
+
+
+@mcp.tool(
+    description="Ask the local model for several options rather than "
+    "for a fact. Give a `path` to have a file considered, or leave it "
+    "empty to ask from nothing. Everything else here answers from a "
+    "text and can be checked against it; this cannot, and says so: the "
+    "schema fixes the shape of the answer, the content is unverified, "
+    "and you are the one who judges it. Do not treat an idea from here "
+    "as something the file says."
+)
+@anticipated
+@recorded
+def brainstorm(
+    question: str,
+    path: str = "",
+    count: int = 5,
+    pattern: str = "",
+    until: str = "",
+    context: int = 12,
+    profile: str = "brainstorm",
+) -> dict:
+    return tasks.brainstorm(
+        backend(profile),
+        tasks.read_text(path) if path else "",
+        question,
+        count,
+        pattern,
+        context,
+        until,
+    )

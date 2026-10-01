@@ -24,6 +24,9 @@ BUILT_IN: dict[str, dict] = {
     # Schema-bound work wants no sampling: there is one right shape and
     # temperature can only move the answer away from it.
     "extract": {"server": "long", "temperature": 0.0},
+    # Asking for several different ideas is the one case where sampling
+    # is the point rather than a hazard.
+    "brainstorm": {"server": "long", "temperature": 0.8},
 }
 
 

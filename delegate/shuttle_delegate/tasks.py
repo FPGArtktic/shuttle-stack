@@ -75,6 +75,20 @@ Do not mention that they arrived in parts.
 
 QUESTION: {question}"""
 
+BRAINSTORM_WITH = """\
+TEXT:
+{text}
+
+---
+{request}"""
+
+BRAINSTORM_ASK = """\
+Suggest {count} different options for the request below. Draw on the
+text above where it bears on the question and on your own judgement
+where it does not. One short, concrete line each, no repetition.
+
+REQUEST: {question}"""
+
 CLASSIFY = """\
 TEXT:
 {text}
@@ -345,6 +359,59 @@ def ask(
         # the sentinel, and the fold then blends it with a real answer.
         # The parts are returned so the caller can see that happen.
         result["said_by_part"] = answers
+    return result
+
+
+def brainstorm(
+    backend: Backend,
+    text: str,
+    question: str,
+    count: int = 5,
+    pattern: str = "",
+    context: int = CONTEXT_LINES,
+    until: str = "",
+) -> dict:
+    """Ask for several options, and say that they are only options.
+
+    This is the one task here with nothing to verify against. The
+    schema fixes the shape of the answer, so a caller always gets a
+    list of strings, and the result says plainly that the strings are
+    suggestions rather than findings. Nothing in them has been checked
+    against anything, and the caller is the verifier.
+    """
+    if not question.strip():
+        raise TaskError("brainstorm needs a request")
+    if not 1 <= count <= 20:
+        raise TaskError(f"count must be 1 to 20, got {count}")
+    matched = 0
+    if text.strip():
+        text, matched = narrowed(text, pattern, context, until)
+    ask = BRAINSTORM_ASK.format(count=count, question=question.strip())
+    prompt = (
+        BRAINSTORM_WITH.format(text=text, request=ask) if text.strip() else ask
+    )
+    schema = {
+        "type": "object",
+        "properties": {
+            "ideas": {"type": "array", "items": {"type": "string"}}
+        },
+        "required": ["ideas"],
+    }
+    work = Work()
+    answer = work.record(
+        backend.chat(prompt, max(256, count * 80), schema=schema)
+    )
+    ideas = _decode(answer, "the ideas").get("ideas", [])
+    if not isinstance(ideas, list) or not ideas:
+        raise TaskError(f"no ideas came back: {answer[:200]}")
+    result = {
+        "ideas": [str(idea).strip() for idea in ideas],
+        "grounded": False,
+        "note": "suggestions, not findings; nothing here was verified",
+        "server": f"shuttle-{backend.role}",
+    } | work.report()
+    if pattern:
+        result["matched_regions"] = matched
     return result
 
 
