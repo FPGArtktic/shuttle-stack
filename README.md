@@ -239,7 +239,10 @@ Two local llama-servers are reachable through the `shuttle` MCP server.
 Use them to keep bulk text out of context, not to avoid deciding things.
 
 - Before reading a long file only to establish a fact from it, call
-  `ask_file` with a `pattern` that lands on the passage.
+  `ask_file` with a `pattern` that lands on the passage and an `until`
+  that says where the passage ends: `^[a-z_]+\(\)` for the next shell
+  function, `^## ` for the next section. Without `until` the region
+  runs on and the answer comes back about the neighbour.
 - To pull known fields out of a file, or the same fields out of many,
   call `extract` with a JSON schema.
 - Find things yourself with grep; hand the local model a region, never
@@ -249,10 +252,15 @@ Use them to keep bulk text out of context, not to avoid deciding things.
   call costs seconds and the read costs almost nothing.
 - Do not ask about anything the file does not contain. Asked without a
   text to read, these models invent an answer and sound sure of it.
-- Prefer `server: "long"`. It is both more accurate and faster here;
+- Prefer `profile: "long"`. It is both more accurate and faster here;
   `fast` is for answering several requests at once.
+- Use `start_job` when the file is large: a call can take minutes, and
+  `get_status` and `get_result` let you do something else meanwhile.
+- `brainstorm` returns suggestions, never findings. Nothing in them was
+  verified against anything; judge them yourself.
 - `local_tokens` in each reply is the context you saved. If it is
-  small, the call was not worth making.
+  small, the call was not worth making. `quotes_not_in_source` means
+  the answer was reconstructed rather than read.
 ```
 
 Keep it short. A rule competing with twenty other rules is a suggestion.
