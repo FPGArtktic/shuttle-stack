@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import unittest
 
-from shuttle_delegate.grounding import check, quotes
+from shuttle_delegate.grounding import check, fields_in_source, quotes
 
 SOURCE = """\
 probe_publish()
@@ -135,3 +135,60 @@ class MarkupTest(unittest.TestCase):
         self.assertFalse(
             check('"ruff reports nothing at all"', self.SOURCE).ok
         )
+
+
+class PairingTest(unittest.TestCase):
+    """Two short quotations on a line must not become one long one."""
+
+    CASES = (
+        'Pass "--no-ngram" to disable the speculator, or "--no-draft".',
+        'Set "-e" and then also set "-u" at the top of the script.',
+        'Use "ruff" together with "shellcheck" before every commit.',
+    )
+
+    def test_the_prose_between_short_quotations_is_not_a_quotation(
+        self,
+    ) -> None:
+        for answer in self.CASES:
+            with self.subTest(answer=answer):
+                self.assertEqual(quotes(answer), [])
+
+    def test_a_long_quotation_beside_a_short_one_is_still_found(self) -> None:
+        answer = 'Pass "-e" because "the script must stop on an error".'
+        self.assertEqual(quotes(answer), ["the script must stop on an error"])
+
+    def test_two_long_quotations_are_both_found(self) -> None:
+        answer = (
+            'It says "the first long quotation here" and also '
+            '"the second long quotation here".'
+        )
+        self.assertEqual(len(quotes(answer)), 2)
+
+    def test_an_unclosed_quotation_ends_at_its_line(self) -> None:
+        answer = 'He wrote "an unclosed quotation here\nand the next line.'
+        self.assertEqual(quotes(answer), ["an unclosed quotation here"])
+
+
+class FieldShapeTest(unittest.TestCase):
+    """A schema may ask for a list or an object, and those count too."""
+
+    SOURCE = "The gateway is 10.89.7.1 and the subnet is 10.89.7.0/24.\n"
+
+    def test_strings_inside_a_list_are_checked(self) -> None:
+        fields = {"addresses": ["10.89.7.1", "192.168.254.254"]}
+        missing = fields_in_source(fields, self.SOURCE)
+        self.assertEqual(len(missing), 1)
+        self.assertIn("addresses[1]", missing[0])
+
+    def test_strings_inside_an_object_are_checked(self) -> None:
+        fields = {"net": {"gateway": "10.89.7.1", "dns": "203.0.113.9"}}
+        missing = fields_in_source(fields, self.SOURCE)
+        self.assertEqual(len(missing), 1)
+        self.assertIn("net.dns", missing[0])
+
+    def test_a_nested_structure_that_holds_up_reports_nothing(self) -> None:
+        fields = {"net": {"hosts": ["10.89.7.1", "10.89.7.0/24"]}}
+        self.assertEqual(fields_in_source(fields, self.SOURCE), [])
+
+    def test_numbers_are_still_left_alone(self) -> None:
+        self.assertEqual(fields_in_source({"port": 8081}, self.SOURCE), [])

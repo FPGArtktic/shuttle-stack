@@ -19,13 +19,14 @@ from dataclasses import dataclass, field
 # Short spans are words rather than citations, and matching them proves
 # nothing either way.
 MIN_QUOTE = 12
-# Only double quotes mark a citation. Backticks were tried and pair
-# ambiguously: in `shellcheck` ... `checkpatch.pl` the regexp joins the
-# closing backtick of one identifier to the opening one of the next and
-# reports the prose between them as an invented quotation. Markup is
-# dropped in flatten instead, so a backticked identifier inside a
-# quoted span still matches.
-QUOTED = re.compile(rf'"([^"\n]{{{MIN_QUOTE},}})"')
+# Quotation marks are paired by position rather than matched by a
+# regular expression. A pattern with a length condition in it scans from
+# the left, fails at the opening mark of a span too short to count, and
+# then starts again at that span's CLOSING mark, so it reports the prose
+# between two short quotations as a quotation itself: in
+#     Pass "--no-ngram" to disable it, or "--no-draft" to free VRAM.
+# it returned 'to disable it, or'. Splitting the line on the mark and
+# taking the odd pieces cannot make that mistake, whatever the lengths.
 # A model ends a quotation where its own sentence ends, which moves the
 # final comma to a full stop. That is not a different claim.
 EDGE = ".,;:!? "
@@ -47,12 +48,17 @@ def flatten(text: str) -> str:
 
 
 def quotes(answer: str) -> list[str]:
-    """The spans the answer presents as quotations."""
-    found = []
-    for match in QUOTED.finditer(answer):
-        span = match.group(1).strip().strip(EDGE)
-        if span and span not in found:
-            found.append(span)
+    """The spans the answer presents as quotations.
+
+    Marks are paired within a line, so an unclosed quotation ends at the
+    end of its line rather than swallowing the paragraph after it.
+    """
+    found: list[str] = []
+    for line in answer.splitlines():
+        for span in line.split('"')[1::2]:
+            cleaned = span.strip().strip(EDGE)
+            if len(cleaned) >= MIN_QUOTE and cleaned not in found:
+                found.append(cleaned)
     return found
 
 
@@ -104,10 +110,32 @@ def fields_in_source(fields: dict, source: str) -> list[str]:
     believe the rest.
     """
     flat = flatten(source)
-    missing = []
+    missing: list[str] = []
     for key, value in fields.items():
-        if not isinstance(value, str) or len(value.strip()) < MIN_FIELD:
-            continue
-        if flatten(value) not in flat:
-            missing.append(f"{key}={value!r}")
+        missing.extend(_absent(key, value, flat))
     return missing
+
+
+def _absent(key: str, value: object, flat: str) -> list[str]:
+    """Every string anywhere under this field that the source lacks.
+
+    A schema may ask for a list or an object, and skipping those left
+    extract reporting a verified answer it had not checked.
+    """
+    if isinstance(value, str):
+        if len(value.strip()) < MIN_FIELD or flatten(value) in flat:
+            return []
+        return [f"{key}={value!r}"]
+    if isinstance(value, dict):
+        return [
+            item
+            for name, inner in value.items()
+            for item in _absent(f"{key}.{name}", inner, flat)
+        ]
+    if isinstance(value, list):
+        return [
+            item
+            for index, inner in enumerate(value)
+            for item in _absent(f"{key}[{index}]", inner, flat)
+        ]
+    return []
