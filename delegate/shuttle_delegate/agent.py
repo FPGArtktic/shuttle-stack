@@ -36,6 +36,7 @@ import subprocess
 import time
 import tomllib
 from collections.abc import Callable
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -220,6 +221,21 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "required": ["name"],
         },
     },
+    "read_section": {
+        "description": "Read one whole section of an indexed "
+        "document, rather than the excerpt a search returns. Name the "
+        "file and the section as search_docs cited them; a page "
+        "serves for a document with no headings.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file": {"type": "string"},
+                "section": {"type": "string"},
+                "page": {"type": "integer"},
+            },
+            "required": ["file"],
+        },
+    },
     "expand_symbol": {
         "description": "One step further than find_references: where a "
         "name is defined, who names it, and what those places refer to "
@@ -367,6 +383,113 @@ BUILT_IN: dict[str, Preset] = {
         },
         ground=("cited",),
         max_steps=8,
+    ),
+    # Fields out of a document, as a loop rather than in one shot.
+    # The `extract` tool sends a region once and takes what comes
+    # back; here the loop searches for where each field is written,
+    # reads that section whole, and is refused if a value it reports
+    # is not in what the tools returned.
+    #
+    # The fields come from the request and not from a schema, because
+    # which fields there are depends on the document. An operator can
+    # name them in a preset of their own, and that shapes the report
+    # rather than completing it: measured twice over a timing report,
+    # a schema requiring six named fields did not send the loop
+    # looking for the three it had not read. It filled them -- two as
+    # "not specified" and one copied out of the wrong table -- and
+    # spent fourteen steps and two and a half minutes being refused.
+    # Reporting three of six with every value right is the better
+    # failure, and it is the one the free-field shape gives.
+    "doc-extract": Preset(
+        name="doc-extract",
+        tools=("search_docs", "read_section", "finish"),
+        task="Pull the fields the request names out of the indexed "
+        "documents. Search for where each one is written, read that "
+        "section with read_section, and report the value as the "
+        "document gives it. Every value goes under 'fields' and the "
+        "file and section it came from under 'cited'. A field the "
+        "documents do not give is reported as null, never guessed.",
+        schema={
+            "type": "object",
+            "properties": {
+                "fields": {"type": "object"},
+                "cited": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["fields", "cited"],
+        },
+        # The values, not the prose. Grounding a sentence makes the
+        # sentence have to appear verbatim, which refuses runs that
+        # read the right numbers.
+        ground=("fields",),
+        max_steps=12,
+    ),
+    # Two documents on one subject. `quoted` carries the words each
+    # one uses and is the grounded field; the prose beside it is the
+    # model's reading and is not checked, because a difference has to
+    # be stated in words neither document contains.
+    "doc-compare": Preset(
+        name="doc-compare",
+        tools=("search_docs", "read_section", "finish"),
+        task="Compare what the indexed documents say about the "
+        "subject of the request. Search them, read the sections that "
+        "answer it, and report each difference with the file it is "
+        "from. Put the exact words you read under 'quoted'. Where "
+        "they agree, say so; do not manufacture a difference.",
+        schema={
+            "type": "object",
+            "properties": {
+                "differences": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "about": {"type": "string"},
+                            "where": {"type": "string"},
+                        },
+                        "required": ["about", "where"],
+                    },
+                },
+                "agree": {"type": "array", "items": {"type": "string"}},
+                "quoted": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["differences", "quoted"],
+        },
+        ground=("quoted",),
+        max_steps=12,
+    ),
+    # A log, and what failed in it. The verdict is an enum so the
+    # decoding grammar holds it to three answers, and the lines are
+    # grounded: a triage that invents an error message is worse than
+    # one that says it could not tell.
+    "log-triage": Preset(
+        name="log-triage",
+        tools=("search_docs", "read_section", "finish"),
+        task="Triage the indexed log. Find what failed, report the "
+        "lines that say so, and name the first failure rather than "
+        "the last. Every line you report must be one the tools gave "
+        "you. If nothing failed, the verdict is passed, there are no "
+        "errors, and 'first' is left out.",
+        schema={
+            "type": "object",
+            "properties": {
+                "verdict": {
+                    "type": "string",
+                    "enum": ["failed", "passed", "unclear"],
+                },
+                "errors": {"type": "array", "items": {"type": "string"}},
+                "first": {"type": "string"},
+                "cited": {"type": "array", "items": {"type": "string"}},
+                "advice": {"type": "string"},
+            },
+            "required": ["verdict", "errors"],
+        },
+        # `errors` only. `first` is a claim about order, and on a log
+        # with nothing wrong in it there is no line to quote: grounded,
+        # it refused a correct "verdict: passed" three times over the
+        # words the model had to put somewhere. The lines themselves
+        # are still checked, because the first error is one of them.
+        ground=("errors",),
+        max_steps=12,
     ),
     # Generate, verify, fix, up to the step budget. The verifier is an
     # external command and is the whole point: the loop ends when
@@ -589,6 +712,15 @@ def _perform(
             with code.connect() as db:
                 found = code.references(
                     db, str(args["name"]), str(args.get("relation", ""))
+                )
+            return json.dumps(found, ensure_ascii=False), True
+        if call.name == "read_section":
+            with closing(indexing.connect()) as db:
+                found = indexing.section(
+                    db,
+                    str(args["file"]),
+                    str(args.get("section", "")),
+                    int(args.get("page", 0) or 0),
                 )
             return json.dumps(found, ensure_ascii=False), True
         if call.name == "expand_symbol":

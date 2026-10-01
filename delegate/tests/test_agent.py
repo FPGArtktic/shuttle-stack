@@ -398,6 +398,43 @@ class SettingsTest(unittest.TestCase):
         self.assertIn("log-triage", held)
         self.assertEqual(held["log-triage"].tools, ("search_docs", "finish"))
 
+    def test_a_nested_schema_survives_the_toml(self) -> None:
+        """What the design means by a preset's report schema: the
+        operator names the fields and the loop is refused until each
+        one is there. A nested object is the useful case and TOML
+        writes it as a path, so it is worth holding."""
+        self.path.write_text(
+            "[rpt-fmax]\n"
+            'tools = ["search_docs", "read_section", "finish"]\n'
+            'ground = ["fields"]\n'
+            "[rpt-fmax.schema]\n"
+            'type = "object"\n'
+            'required = ["fields"]\n'
+            "[rpt-fmax.schema.properties.fields]\n"
+            'type = "object"\n'
+            'required = ["fmax", "clock_name"]\n'
+            "[rpt-fmax.schema.properties.fields.properties.fmax]\n"
+            'type = "string"\n'
+        )
+        held = agent.settings()["rpt-fmax"]
+        held.verified()
+        assert held.schema is not None
+        inner = held.schema["properties"]["fields"]
+        self.assertEqual(inner["required"], ["fmax", "clock_name"])
+        self.assertEqual(held.ground, ("fields",))
+
+    def test_the_schema_reaches_the_finish_tool(self) -> None:
+        self.path.write_text(
+            "[shaped]\n"
+            'tools = ["finish"]\n'
+            "[shaped.schema]\n"
+            'type = "object"\n'
+            'required = ["fields"]\n'
+        )
+        described = agent.describe(agent.settings()["shaped"])
+        inner = described[0]["function"]["parameters"]["properties"]
+        self.assertEqual(inner["report"]["required"], ["fields"])
+
     def test_a_file_can_tighten_a_built_in_budget(self) -> None:
         self.path.write_text("[repo-scout]\nmax_steps = 3\n")
         held = agent.settings()
@@ -415,6 +452,97 @@ class SettingsTest(unittest.TestCase):
         self.path.write_text("[oops\n")
         with self.assertRaises(AgentError):
             agent.settings()
+
+
+class BuiltInTest(unittest.TestCase):
+    """The six presets the design names, and what each is held to."""
+
+    def test_every_preset_the_design_names_is_there(self) -> None:
+        self.assertEqual(
+            set(agent.BUILT_IN),
+            {
+                "doc-compare",
+                "doc-extract",
+                "doc-qa",
+                "log-triage",
+                "repo-scout",
+                "verify-loop",
+            },
+        )
+
+    def test_every_tool_a_preset_asks_for_is_a_tool(self) -> None:
+        for name, one in agent.BUILT_IN.items():
+            with self.subTest(preset=name):
+                agent.describe(one)
+
+    def test_a_preset_that_reads_documents_can_read_one_whole(
+        self,
+    ) -> None:
+        """search_docs excerpts; a field or an error line needs more."""
+        for name in ("doc-extract", "doc-compare", "log-triage"):
+            with self.subTest(preset=name):
+                self.assertIn("read_section", agent.BUILT_IN[name].tools)
+
+    def test_the_grounded_fields_hold_no_prose(self) -> None:
+        """Grounding a sentence makes the sentence have to appear
+        verbatim, which refuses a run that read the right values."""
+        # `first` is here because it is only sometimes a quotation:
+        # on a log with nothing wrong there is no line to put in it.
+        prose = {
+            "about",
+            "advice",
+            "answer",
+            "first",
+            "summary",
+            "verdict",
+        }
+        for name, one in agent.BUILT_IN.items():
+            with self.subTest(preset=name):
+                self.assertEqual(set(one.ground) & prose, set())
+
+    def test_a_triage_verdict_is_held_to_three_answers(self) -> None:
+        described = agent.describe(agent.BUILT_IN["log-triage"])
+        inner = described[-1]["function"]["parameters"]["properties"]
+        verdict = inner["report"]["properties"]["verdict"]
+        self.assertEqual(verdict["enum"], ["failed", "passed", "unclear"])
+
+
+class ReadSectionTest(LoopTest):
+    def test_the_loop_reads_a_section_through_the_index(self) -> None:
+        preset = Preset(
+            name="x", tools=("read_section", "finish"), schema=SHAPED
+        )
+        with (
+            mock.patch.object(indexing, "connect"),
+            mock.patch.object(
+                indexing, "section", return_value={"text": "VDD is 3.3 V"}
+            ) as read,
+        ):
+            run = self.run_with(
+                preset,
+                [call("read_section", file="sheet.pdf", section="3.1")],
+                [call("finish", report={"answer": "3.3 V"})],
+            )
+        self.assertTrue(run.verified)
+        self.assertEqual(read.call_args.args[1:], ("sheet.pdf", "3.1", 0))
+        self.assertIn("VDD is 3.3 V", run.steps[0].answer)
+
+    def test_a_page_reaches_the_lookup_as_a_number(self) -> None:
+        preset = Preset(
+            name="x", tools=("read_section", "finish"), schema=SHAPED
+        )
+        with (
+            mock.patch.object(indexing, "connect"),
+            mock.patch.object(
+                indexing, "section", return_value={"text": "numbers"}
+            ) as read,
+        ):
+            self.run_with(
+                preset,
+                [call("read_section", file="sheet.pdf", page=5)],
+                [call("finish", report={"answer": "a"})],
+            )
+        self.assertEqual(read.call_args.args[1:], ("sheet.pdf", "", 5))
 
 
 class NonAsciiGroundingTest(LoopTest):
