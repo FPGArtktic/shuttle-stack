@@ -374,6 +374,67 @@ class IndexTest(unittest.TestCase):
             indexing.store(self.db, "a.pdf", [Section(1, "1 R", "t")])
         self.assertIn("1024", str(caught.exception))
 
+    def test_the_same_question_twice_is_answered_from_the_file(
+        self,
+    ) -> None:
+        self.feed(a_pdf=[Section(1, "1 Reset", "the reset is active low")])
+        first = self.ask("reset")
+        self.assertFalse(first["cached"])
+        with mock.patch.object(
+            indexing, "embed", side_effect=AssertionError("asked again")
+        ):
+            again = indexing.search("reset", 3, db=self.db)
+        self.assertTrue(again["cached"])
+        self.assertEqual(
+            [h["page"] for h in again["hits"]],
+            [h["page"] for h in first["hits"]],
+        )
+
+    def test_a_different_limit_is_a_different_question(self) -> None:
+        self.feed(
+            a_pdf=[
+                Section(1, "1 Reset", "the reset is active low"),
+                Section(2, "2 Timer", "the timer counts the reset"),
+            ]
+        )
+        self.ask("reset", limit=1)
+        self.assertFalse(self.ask("reset", limit=2)["cached"])
+
+    def test_indexing_anything_drops_the_kept_answers(self) -> None:
+        self.feed(a_pdf=[Section(1, "1 Reset", "the reset is active low")])
+        self.ask("reset")
+        self.feed(b_pdf=[Section(1, "1 Clock", "the clock is 50 MHz")])
+        self.assertFalse(self.ask("reset")["cached"])
+
+    def test_a_stale_answer_is_not_served(self) -> None:
+        self.feed(a_pdf=[Section(1, "1 Reset", "the reset is active low")])
+        self.ask("reset")
+        with mock.patch.object(
+            indexing, "embed", side_effect=self.embedding_for
+        ):
+            answer = indexing.search("reset", 3, db=self.db, ttl=-1.0)
+        self.assertFalse(answer["cached"])
+
+    def test_a_cached_answer_says_how_old_it_is(self) -> None:
+        self.feed(a_pdf=[Section(1, "1 Reset", "the reset is active low")])
+        self.ask("reset")
+        again = self.ask("reset")
+        self.assertIn("cached_age_seconds", again)
+        self.assertGreaterEqual(again["cached_age_seconds"], 0.0)
+
+    def test_a_degraded_answer_stays_marked_when_it_is_served_again(
+        self,
+    ) -> None:
+        self.feed(a_pdf=[Section(1, "1 Reset", "the reset is active low")])
+        with mock.patch.object(
+            indexing, "embed", side_effect=IndexingError("ollama is down")
+        ):
+            first = indexing.search("reset", 3, db=self.db)
+            again = indexing.search("reset", 3, db=self.db)
+        self.assertIn("ollama is down", first["degraded"])
+        self.assertTrue(again["cached"])
+        self.assertIn("ollama is down", again["degraded"])
+
     def test_an_existing_file_without_the_lexical_index_gains_one(
         self,
     ) -> None:

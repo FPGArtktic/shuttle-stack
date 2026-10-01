@@ -76,6 +76,13 @@ RRF_K = 60
 # not MMR at all; at 0.5 a datasheet's repeated boilerplate starts
 # outranking a second genuinely relevant clause.
 MMR_LAMBDA = 0.7
+# How long a search result is served from the cache. The number is
+# arbitrary and the staleness it guards against is not: an index that
+# has changed invalidates every cached search regardless of the clock,
+# which is what the stamp below is for. The TTL is only there so that
+# a cache nobody cleared does not answer next month's question with
+# last month's ranking.
+SEARCH_TTL = float(os.environ.get("SHUTTLE_SEARCH_TTL", 3600.0))
 # A numbered clause or a Markdown heading. The word after the number
 # has to look like a word: the first version asked only for a number
 # followed by whitespace, and a datasheet is mostly tables of numbers,
@@ -129,6 +136,14 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 CREATE INDEX IF NOT EXISTS chunks_document ON chunks (document, ordinal);
 CREATE INDEX IF NOT EXISTS chunks_clause ON chunks (clause);
+CREATE TABLE IF NOT EXISTS searches (
+    question TEXT NOT NULL,
+    wanted   INTEGER NOT NULL,
+    stamp    TEXT NOT NULL,
+    hits     TEXT NOT NULL,
+    made_at  REAL NOT NULL,
+    PRIMARY KEY (question, wanted)
+);
 """
 
 # External content, so the text is stored once. The triggers live in
@@ -405,6 +420,7 @@ def forget(db: sqlite3.Connection, file: str) -> int:
     db.executemany("DELETE FROM vec_chunks WHERE id = ?", [(i,) for i in ids])
     db.execute("DELETE FROM chunks WHERE document = ?", (file,))
     db.execute("DELETE FROM documents WHERE path = ?", (file,))
+    db.execute("DELETE FROM searches")
     return len(ids)
 
 
@@ -645,12 +661,86 @@ def _trim(
         room = max(MIN_EXCERPT, room * 2 // 3)
 
 
+def stamp(db: sqlite3.Connection) -> str:
+    """What the index currently holds, as one short string.
+
+    A cached search is wrong the moment the index changes, and a TTL
+    cannot know that. The count and the latest indexing time move for
+    a document added, replaced or dropped, including one WEFT wrote,
+    so comparing this is cheaper and more honest than hoping an hour
+    is short enough.
+    """
+    row = db.execute(
+        "SELECT COUNT(*), COALESCE(MAX(indexed_at), 0) FROM documents"
+    ).fetchone()
+    return f"{row[0]}:{row[1]:.3f}"
+
+
+def remembered(
+    db: sqlite3.Connection, question: str, limit: int, ttl: float
+) -> tuple[list[Hit], dict[str, Any]] | None:
+    """A kept answer to this question, if it is still the right one."""
+    row = db.execute(
+        "SELECT stamp, hits, made_at FROM searches"
+        " WHERE question = ? AND wanted = ?",
+        (question, limit),
+    ).fetchone()
+    if row is None:
+        return None
+    age = time.time() - float(row["made_at"])
+    if age > ttl or row["stamp"] != stamp(db):
+        db.execute(
+            "DELETE FROM searches WHERE question = ? AND wanted = ?",
+            (question, limit),
+        )
+        db.commit()
+        return None
+    kept = json.loads(row["hits"])
+    hits = [Hit(**one) for one in kept["hits"]]
+    return hits, {
+        "searched": kept["searched"],
+        "cached": True,
+        "cached_age_seconds": round(age, 1),
+    } | ({"degraded": kept["degraded"]} if kept.get("degraded") else {})
+
+
+def remember(
+    db: sqlite3.Connection,
+    question: str,
+    limit: int,
+    hits: list[Hit],
+    about: dict[str, Any],
+) -> None:
+    """Keep the hits, not the report: the budget may be different next
+    time, and re-trimming an excerpt is free where re-ranking is not.
+    """
+    db.execute(
+        "INSERT OR REPLACE INTO searches"
+        " (question, wanted, stamp, hits, made_at) VALUES (?, ?, ?, ?, ?)",
+        (
+            question,
+            limit,
+            stamp(db),
+            json.dumps(
+                {
+                    "hits": [vars(hit) for hit in hits],
+                    "searched": about["searched"],
+                    "degraded": about.get("degraded", ""),
+                }
+            ),
+            time.time(),
+        ),
+    )
+    db.commit()
+
+
 def search(
     question: str,
     limit: int = 3,
     count: Count | None = None,
     budget: int = SEARCH_TOKENS,
     db: sqlite3.Connection | None = None,
+    ttl: float = SEARCH_TTL,
 ) -> dict[str, Any]:
     """The sections nearest the question, with where each came from.
 
@@ -658,6 +748,11 @@ def search(
     the lexical half still answers and the reply says the other half
     is missing: a search that had quietly become a grep would be worse
     than one that failed.
+
+    The same question asked twice is answered from the file without
+    embedding it again, and the reply says so and how old it is. A
+    degraded answer is kept like any other, so the note travels with
+    it rather than disappearing on the second ask.
     """
     if not question.strip():
         raise IndexingError("a search needs something to search for")
@@ -668,21 +763,14 @@ def search(
             raise IndexingError(
                 f"{index_file()} holds no documents; index_path adds one"
             )
-        ranked = {"lexical": _lexical(db, question)}
-        note = ""
-        try:
-            ranked["semantic"] = _semantic(db, embed([question])[0])
-        except IndexingError as error:
-            note = f"the semantic half is missing: {error}"
-        fused = fuse(ranked)
-        vectors = _vectors(db, (entry[0] for entry in fused))
-        hits = _rows(db, diversify(fused, vectors, limit))
-        answer: dict[str, Any] = {
-            "index": str(index_file()),
-            "searched": sorted(name for name, ids in ranked.items() if ids),
-        }
-        if note:
-            answer["degraded"] = note
+        found = remembered(db, question, limit, ttl) if ttl > 0 else None
+        if found is not None:
+            hits, about = found
+        else:
+            hits, about = _look(db, question, limit)
+            if ttl > 0:
+                remember(db, question, limit, hits, about)
+        answer: dict[str, Any] = {"index": str(index_file())} | about
         if count is None:
             answer["trimmed"] = False
             return _trim(answer, hits, lambda _text: 0, budget)
@@ -692,6 +780,28 @@ def search(
     finally:
         if own:
             db.close()
+
+
+def _look(
+    db: sqlite3.Connection, question: str, limit: int
+) -> tuple[list[Hit], dict[str, Any]]:
+    """Ask both halves, fuse, thin. The part worth not repeating."""
+    ranked = {"lexical": _lexical(db, question)}
+    note = ""
+    try:
+        ranked["semantic"] = _semantic(db, embed([question])[0])
+    except IndexingError as error:
+        note = f"the semantic half is missing: {error}"
+    fused = fuse(ranked)
+    vectors = _vectors(db, (entry[0] for entry in fused))
+    hits = _rows(db, diversify(fused, vectors, limit))
+    about: dict[str, Any] = {
+        "searched": sorted(name for name, ids in ranked.items() if ids),
+        "cached": False,
+    }
+    if note:
+        about["degraded"] = note
+    return hits, about
 
 
 def indexed(db: sqlite3.Connection | None = None) -> dict[str, Any]:
