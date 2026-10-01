@@ -624,7 +624,17 @@ def _check_report(
     if preset.ground:
         cited = {key: report[key] for key in preset.ground if key in report}
         absent = grounding.fields_in_source(cited, shown)
-        quoted = grounding.check(json.dumps(cited, default=str), shown)
+        # ensure_ascii=False or the check cannot pass. The default
+        # turns every non-ASCII character into a \uXXXX escape, and
+        # the escape is what then gets looked for in the source: a
+        # correct answer holding a µ, an Ω, a °C or the curly quotes
+        # gcc writes its messages with was refused for that alone.
+        # Measured on a real make log — the model reported
+        # `expected ‘;’ before ‘return’`, which is the line the log
+        # has, and the run was refused three times and gave up.
+        quoted = grounding.check(
+            json.dumps(cited, ensure_ascii=False, default=str), shown
+        )
         if absent or quoted.missing:
             said.append(
                 "these are not in what the tools returned, so they were "
@@ -775,7 +785,9 @@ def start(
                         "type": "function",
                         "function": {
                             "name": one.name,
-                            "arguments": json.dumps(one.arguments),
+                            "arguments": json.dumps(
+                                one.arguments, ensure_ascii=False
+                            ),
                         },
                     }
                     for one in calls

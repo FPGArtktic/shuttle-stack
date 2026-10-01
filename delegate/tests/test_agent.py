@@ -341,5 +341,71 @@ class SettingsTest(unittest.TestCase):
             agent.settings()
 
 
+class NonAsciiGroundingTest(LoopTest):
+    """A correct answer may hold a character that is not ASCII.
+
+    The domain is full of them: µA and Ω and °C in a datasheet, the
+    curly quotes gcc writes its messages with. Serialising the cited
+    fields the default way turns each into a \\uXXXX escape and then
+    looks for the escape in the source, so a right answer is refused
+    for holding the right character.
+    """
+
+    SAID = "expected \u2018;\u2019 before \u2018return\u2019"
+
+    def ground_on(self, *turns: Any) -> agent.Run:
+        preset = Preset(
+            name="x",
+            tools=("search_docs", "finish"),
+            schema={
+                "type": "object",
+                "properties": {"errors": {"type": "array"}},
+                "required": ["errors"],
+            },
+            ground=("errors",),
+        )
+        with mock.patch.object(
+            indexing, "search", return_value={"hits": [{"text": self.SAID}]}
+        ):
+            return self.run_with(preset, *turns)
+
+    def test_a_line_with_curly_quotes_grounds(self) -> None:
+        run = self.ground_on(
+            [call("search_docs", question="what failed")],
+            [call("finish", report={"errors": [self.SAID]})],
+        )
+        self.assertTrue(run.verified, run.checks)
+
+    def test_a_line_the_source_does_not_hold_is_still_refused(self) -> None:
+        """The fix must not be a loosening of the check."""
+        invented = "expected \u2018}\u2019 before \u2018while\u2019"
+        run = self.ground_on(
+            [call("search_docs", question="what failed")],
+            [call("finish", report={"errors": [invented]})],
+            [call("finish", report={"errors": [invented]})],
+            [call("finish", report={"errors": [invented]})],
+            [call("finish", report={"errors": [invented]})],
+        )
+        self.assertFalse(run.verified)
+
+    def test_the_replayed_call_keeps_the_characters_it_was_given(
+        self,
+    ) -> None:
+        """The model reads its own earlier call back, and an escape
+        there is text it did not write."""
+        preset = Preset(
+            name="x", tools=("search_docs", "finish"), schema=SHAPED
+        )
+        with mock.patch.object(indexing, "search", return_value={"hits": []}):
+            self.run_with(
+                preset,
+                [call("search_docs", question="\u2018reset\u2019")],
+                [call("finish", report={"answer": "a"})],
+            )
+        replayed = json.dumps(self.server.asked[-1], ensure_ascii=False)
+        self.assertIn("\u2018reset\u2019", replayed)
+        self.assertNotIn("\\u2018", replayed)
+
+
 if __name__ == "__main__":
     unittest.main()
