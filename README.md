@@ -46,6 +46,7 @@ and M2 the evaluation that says how far either can be trusted.
 | Backup | working — `shuttle-backup` writes one tar holding the index, the transcripts and the log; the index copied through SQLite, not byte for byte |
 | Distillation set | working, and empty until used — `grade_run` records a verdict and a correction, `shuttle-dataset` exports JSONL |
 | Search cache | working — a repeated search served from the file, 15x faster, invalidated by the index changing rather than by the clock |
+| Overnight pass | working — a timer indexes and digests watched directories and leaves a thousand-token report; the KV warming is in and off, worth a second against 305 MiB |
 | Answer cache | working, deliberately narrow — a reworded repeat of a question answered without the model, 46x faster; a paraphrase in different words is not, and the measurement below says why |
 | PDF documents | working — text layer first, OCR only for the pages without one, in a container with no network |
 | Sessions | working — a document read once and asked repeatedly; the transcript is the record, the KV dump only a cache |
@@ -523,6 +524,61 @@ answer narrowed by a `pattern` is not kept at all, having been read from
 whatever region that pattern matched. A cache that cannot be reached is a
 miss and never a failed call. Every hit says what it was originally asked,
 how far that was, and that it cost nothing.
+
+### The night, and what the morning starts with
+
+`shuttle-sweep` runs on a systemd timer over the directories named in
+`sweep.toml`, and the pass is idempotent: what was indexed is remembered by
+path, size and modification time, so a directory of four hundred datasheets
+costs nothing on the second night and an edited file is read again. A
+document dropped in during the evening is searchable with citations in the
+morning, which is what M6 asks for.
+
+```
+roots  = ["~/datasheets", "~/work/bsp"]
+digest = true        # section summaries, about as long again as indexing
+warm   = 0           # documents to leave in a KV cache; see below
+```
+
+The night leaves `.shuttle/report.md`, held to the same thousand tokens
+every other answer here is. Failures are listed before successes and the
+list is cut before the report is, so what went wrong survives the trimming.
+One unreadable file does not end the pass, and a document that was indexed
+but not digested is reported as indexed with a note, not as failed — the
+alternative has the next pass read it all over again.
+
+**The KV warming is implemented and off by default, because it was measured
+to be worth about a second.** The pass can leave the most-asked documents in
+a server's KV cache, chosen from the audit log rather than guessed, so a
+morning question restores a dump instead of reprocessing the document.
+Measured on a 5709-token document, alternating with another document served
+between every pair so neither run reads a warm slot:
+
+```
+answer length    session_ask on a dump    ask_file read fresh
+20 words          4.7  5.3  5.3 s          6.3  6.1  5.3 s
+200 words        18.6 19.8 20.6 s         18.2 18.4 19.3 s
+```
+
+Restoring is worth under a second on a short answer and costs about a second
+on a long one, where the restore is more work than the prompt processing it
+avoids. Generation dominates either way. A dump is 305 MiB whatever the
+document — it is sized by the context, not by the text — so `warm = 2` buys
+610 MiB of disk for a second that the answer's own length can hide. It is
+left in because the mechanism is sound and the arithmetic is a property of
+this machine: a host whose disk is much faster than its prompt processing,
+or one with a context large enough for documents several times this size,
+would see the other result. On this one, set it only if you have measured
+your own.
+
+What it chooses is not a guess: the audit log records every call with the
+path it was about, so the count of successful `ask_file`, `extract`,
+`classify_file`, `summarize_file` and `session_open` calls per document is
+the ranking. A search does not count — it reads the index rather than the
+file. A document re-indexed that same night is read again rather than kept,
+because a cache about the text as it was is worse than no cache. A document
+still wanted keeps the session it had, so the id the report names survives
+from one night to the next.
 
 ### PDFs
 
@@ -1259,7 +1315,10 @@ alongside from M2. M8 is independent of all of it.
   overnight indexing of both documents and source, a morning report short
   enough to read in a thousand tokens, and the answer cache — narrower than
   the plan asks for, for the reason given under *Asking the same thing
-  twice*. Still to come: the digestion and the refreshed KV dumps.
+  twice*. The KV dump refresh is in and off by default, measured to be worth
+  about a second against 305 MiB a document; see *The night* above. The
+  criterion that the report is in place before 07:00 for five consecutive
+  days is a matter of five days passing rather than of code.
 - **M7 — distillation.** The set exists and fills as the stack is used; see
   *Grading an answer* above. The training waits on data rather than on code:
   QLoRA on Qwen3-1.7B, evaluated against the golden set, the adapter exported
