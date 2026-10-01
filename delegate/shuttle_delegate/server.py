@@ -15,6 +15,7 @@ from . import audit, cascade, profiles, runs, sessions, tasks
 from .backend import Backend, BackendError
 from .cascade import CascadeError
 from .config import ConfigError, load_endpoints
+from .documents import DocumentError
 from .jobs import JobError, Queue
 from .profiles import ProfileError
 from .retrieval import PatternError
@@ -26,6 +27,7 @@ from .tasks import TaskError
 # model as a message rather than as a crash it cannot read.
 EXPECTED = (
     TaskError,
+    DocumentError,
     CascadeError,
     SessionError,
     JobError,
@@ -40,6 +42,11 @@ EXPECTED = (
 INSTRUCTIONS = """\
 SHUTTLE hands bulk text work to two llama-servers on this machine, so
 that the text itself never enters your context.
+
+A path may be a PDF. It is extracted in a container that has no network
+and sees only that document's directory, using its text layer where it
+has one and OCR only for the pages without, and the text arrives marked
+with page numbers so an answer can say which page it came from.
 
 Pass a file path, not the file's contents. The delegate reads the file,
 splits it if it does not fit the server's context, and returns only the
@@ -414,12 +421,14 @@ def session_open(
     profile: str = "long",
 ) -> dict:
     return sessions.open_session(
-        backend(profile), path, words, pattern, until, context
+        backend(profile), profile, path, words, pattern, until, context
     )
 
 
 @mcp.tool(
-    description="Ask an open session a question. The document is not "
+    description="Ask an open session a question. The server is the one "
+    "the session was opened on; you do not choose it here. The document "
+    "is not "
     "sent again; its cache is restored instead. If the file has changed "
     "since the session was opened the cache is thrown away rather than "
     "trusted, the answer comes from the new text, and the reply says so "
@@ -427,8 +436,8 @@ def session_open(
     "exactly as in ask_file."
 )
 @anticipated
-def session_ask(session: str, question: str, profile: str = "long") -> dict:
-    return sessions.ask(backend(profile), session, question)
+def session_ask(session: str, question: str) -> dict:
+    return sessions.ask(backend, session, question)
 
 
 @mcp.tool(
@@ -438,5 +447,5 @@ def session_ask(session: str, question: str, profile: str = "long") -> dict:
     ".shuttle/sessions survives and holds every question and answer."
 )
 @anticipated
-def session_close(session: str, profile: str = "long") -> dict:
-    return sessions.close(backend(profile), session)
+def session_close(session: str) -> dict:
+    return sessions.close(backend, session)

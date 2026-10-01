@@ -15,6 +15,8 @@ from pathlib import Path
 
 from .backend import Backend, Completion
 from .chunking import chunk
+from .documents import is_document
+from .documents import read as read_document
 from .grounding import Grounding, check, fields_in_source
 from .retrieval import CONTEXT_LINES, narrow
 
@@ -140,9 +142,16 @@ class Work:
 
 
 def read_text(path: str) -> str:
+    """A file as text, extracting it first if it is a document.
+
+    Every tool here reads its input through this, so a PDF is accepted
+    anywhere a path is, and arrives with its page markers intact.
+    """
     file = Path(path).expanduser()
     if not file.is_file():
         raise TaskError(f"{file}: not a readable file")
+    if is_document(file):
+        return read_document(str(file))
     text = file.read_text(errors="replace")
     if not text.strip():
         raise TaskError(f"{file}: holds no text to work on")
