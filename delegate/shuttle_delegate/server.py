@@ -11,8 +11,9 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from . import audit, profiles, runs, sessions, tasks
+from . import audit, cascade, profiles, runs, sessions, tasks
 from .backend import Backend, BackendError
+from .cascade import CascadeError
 from .config import ConfigError, load_endpoints
 from .jobs import JobError, Queue
 from .profiles import ProfileError
@@ -25,6 +26,7 @@ from .tasks import TaskError
 # model as a message rather than as a crash it cannot read.
 EXPECTED = (
     TaskError,
+    CascadeError,
     SessionError,
     JobError,
     ProfileError,
@@ -236,18 +238,26 @@ def ask_file(
     context: int = 12,
     words: int = 200,
     attempts: int = 2,
+    cascade_profiles: str = "",
     profile: str = "long",
 ) -> dict:
-    return tasks.ask(
-        backend(profile),
-        tasks.read_text(path),
-        question,
-        words,
-        pattern,
-        context,
-        until,
-        attempts,
-    )
+    text = tasks.read_text(path)
+
+    def once(chosen: str) -> dict:
+        return tasks.ask(
+            backend(chosen),
+            text,
+            question,
+            words,
+            pattern,
+            context,
+            until,
+            attempts,
+        )
+
+    if not cascade_profiles:
+        return once(profile)
+    return cascade.climb(cascade.ladder(cascade_profiles), once)
 
 
 @mcp.tool(
@@ -293,18 +303,26 @@ def extract(
     until: str = "",
     context: int = 12,
     attempts: int = 2,
+    cascade_profiles: str = "",
     profile: str = "extract",
 ) -> dict:
-    return tasks.extract(
-        backend(profile),
-        tasks.read_text(path),
-        schema,
-        instructions,
-        pattern,
-        context,
-        until,
-        attempts,
-    )
+    text = tasks.read_text(path)
+
+    def once(chosen: str) -> dict:
+        return tasks.extract(
+            backend(chosen),
+            text,
+            schema,
+            instructions,
+            pattern,
+            context,
+            until,
+            attempts,
+        )
+
+    if not cascade_profiles:
+        return once(profile)
+    return cascade.climb(cascade.ladder(cascade_profiles), once)
 
 
 @mcp.tool(
