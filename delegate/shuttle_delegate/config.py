@@ -48,6 +48,10 @@ class Endpoint:
 
     role: str
     url: str
+    # Where the server writes its KV slot dumps, on this side of the
+    # container.  The server names them by filename; the delegate needs
+    # the directory to see whether one is there and to remove it.
+    cache: Path | None = None
 
 
 def load_endpoints(path: Path | None = None) -> dict[str, Endpoint]:
@@ -67,5 +71,10 @@ def load_endpoints(path: Path | None = None) -> dict[str, Endpoint]:
                 "outside the shuttle network, so reinstall without "
                 "--no-expose-direct"
             )
-        endpoints[role] = Endpoint(role, f"http://127.0.0.1:{port}")
+        cache = env.get(f"SHUTTLE_{role.upper()}_CACHE")
+        endpoints[role] = Endpoint(
+            role,
+            f"http://127.0.0.1:{port}",
+            Path(cache) if cache else None,
+        )
     return endpoints

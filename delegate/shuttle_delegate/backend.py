@@ -131,3 +131,32 @@ class Backend:
             tokens_out=int(usage.get("completion_tokens", 0)),
             truncated=choice.get("finish_reason") == "length",
         )
+
+    def slot_save(self, name: str) -> int:
+        """Write slot zero's KV cache out; returns the tokens saved.
+
+        The server names the file inside its own cache directory, so
+        the caller gives a name rather than a path.
+        """
+        answer = self._request(
+            "/slots/0?action=save", {"filename": name}, self.timeout
+        )
+        return int(answer.get("n_saved", 0))
+
+    def slot_restore(self, name: str) -> int:
+        """Read a KV cache back into slot zero; returns its tokens."""
+        answer = self._request(
+            "/slots/0?action=restore", {"filename": name}, self.timeout
+        )
+        return int(answer.get("n_restored", 0))
+
+    def cached(self, name: str) -> bool:
+        """Whether that dump is on disk where the server would find it."""
+        cache = self.endpoint.cache
+        return bool(cache and (cache / name).is_file())
+
+    def forget(self, name: str) -> None:
+        """Remove a dump. A cache nobody can clear is a leak."""
+        cache = self.endpoint.cache
+        if cache:
+            (cache / name).unlink(missing_ok=True)
