@@ -11,12 +11,13 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from . import audit, profiles, runs, tasks
+from . import audit, profiles, runs, sessions, tasks
 from .backend import Backend, BackendError
 from .config import ConfigError, load_endpoints
 from .jobs import JobError, Queue
 from .profiles import ProfileError
 from .retrieval import PatternError
+from .sessions import SessionError
 from .tasks import TaskError
 
 # Failures the caller can do something about: a path that is not there,
@@ -24,6 +25,7 @@ from .tasks import TaskError
 # model as a message rather than as a crash it cannot read.
 EXPECTED = (
     TaskError,
+    SessionError,
     JobError,
     ProfileError,
     BackendError,
@@ -365,3 +367,50 @@ def brainstorm(
         context,
         until,
     )
+
+
+@mcp.tool(
+    description="Read a document once and keep its cache under a name, "
+    "so later questions about it answer quickly. Give the same `path`, "
+    "`pattern` and `until` you would have given ask_file, and a `words` "
+    "limit that holds for every answer in the session. Worth it when "
+    "you expect more than one or two questions about the same text: on "
+    "this machine a 4000-token document costs ten seconds to read and "
+    "the questions after it answer in six rather than eleven."
+)
+@anticipated
+def session_open(
+    path: str,
+    words: int = 200,
+    pattern: str = "",
+    until: str = "",
+    context: int = 12,
+    profile: str = "long",
+) -> dict:
+    return sessions.open_session(
+        backend(profile), path, words, pattern, until, context
+    )
+
+
+@mcp.tool(
+    description="Ask an open session a question. The document is not "
+    "sent again; its cache is restored instead. If the file has changed "
+    "since the session was opened the cache is thrown away rather than "
+    "trusted, the answer comes from the new text, and the reply says so "
+    "in `source_changed`. Quotations are checked against the document "
+    "exactly as in ask_file."
+)
+@anticipated
+def session_ask(session: str, question: str, profile: str = "long") -> dict:
+    return sessions.ask(backend(profile), session, question)
+
+
+@mcp.tool(
+    description="Drop a session's cache and keep its transcript. The "
+    "dump is 305 MiB on this machine, so a session left open is disk "
+    "spent on a document nobody is asking about. The transcript under "
+    ".shuttle/sessions survives and holds every question and answer."
+)
+@anticipated
+def session_close(session: str, profile: str = "long") -> dict:
+    return sessions.close(backend(profile), session)

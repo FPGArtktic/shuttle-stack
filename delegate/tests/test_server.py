@@ -12,10 +12,21 @@ from shuttle_delegate.profiles import ProfileError
 from shuttle_delegate.server import anticipated, backend, mcp
 from shuttle_delegate.tasks import TaskError
 
-JOBLESS = {"status", "start_job", "get_status", "get_result"}
+JOBLESS = {
+    "status",
+    "start_job",
+    "get_status",
+    "get_result",
+    "session_open",
+    "session_ask",
+    "session_close",
+}
 
 EXPECTED = {
     "status",
+    "session_open",
+    "session_ask",
+    "session_close",
     "brainstorm",
     "start_job",
     "get_status",
