@@ -34,6 +34,7 @@ and M2 the evaluation that says how far either can be trusted.
 | `classify_file` | working — labels enforced by a schema, votes across parts, reports agreement |
 | `extract` | working — fields enforced by a schema, narrows by regexp; refuses a file that needs more than one part |
 | `brainstorm` | working — several options, shape fixed by a schema, content explicitly unverified |
+| N-gram lookup | working, off by default — measured no gain, and slightly slower with no draft model |
 | Cascade | working, and not worth switching on here — the ladder verified on the first profile every time, and cost 3.2x the seconds |
 | Best-of-n | working — a sample failing its verifier is drawn again, warmer; 1.00 attempts per case over the evaluation set |
 | Sessions | working — a document read once and asked repeatedly; the transcript is the record, the KV dump only a cache |
@@ -356,6 +357,31 @@ A refusal is never drawn again. Sampling until something comes back would
 reward the model for inventing an answer to a question the file does not
 address, which is the failure the checking exists to prevent.
 
+### The n-gram lookup, and why it is off too
+
+`--ngram` adds a second speculator ahead of the draft model: a lookup for
+the last few tokens of the prompt, drafting whatever followed them there. It
+needs no model and no VRAM, which on a 4 GiB card promised speculation even
+with `--no-draft`, where the draft model does not fit.
+
+It gains nothing here. Comparing within the same number of offloaded layers:
+
+| Speculators | GPU layers | extract | summarise |
+|---|---|---|---|
+| `ngram-simple,draft-simple` | 11 | 4.7 / 4.0 s | 12.6 / 9.5 s |
+| `draft-simple` | 11 | 4.5 / 4.2 s | 14.2 / 9.4 s |
+| `ngram-simple` | 19 | 7.1 / 6.6 s | 12.9 / 11.5 s |
+| none | 19 | 6.8 / 6.3 s | 13.3 / 9.1 s |
+
+Two runs of each. With a draft model the lookup makes no difference; without
+one it is marginally the slower choice. Narrowing by pattern leaves a prompt
+of a few hundred tokens and an answer of two fields or eighty words, so there
+is little for a lookup to copy and few chances to copy it.
+
+The same table says something else worth having: eleven layers with a draft
+beat nineteen without one, 4.0 seconds against 6.3. **A draft model is worth
+more than eight layers of GPU offload on this card.**
+
 ### The cascade, and why it is off here
 
 `ask_file` and `extract` take `cascade_profiles`, a comma-separated ladder
@@ -624,7 +650,7 @@ Every flag is shown by `./install.sh --help`.
 | `--layers N` | layers in the long model, for the VRAM estimate (default 36) |
 | `--draft-layers N` | layers in the draft model, for the same estimate (default 28) |
 | `--no-gpu` | run `shuttle-long` on the CPU as well |
-| `--no-draft` | disable speculative decoding |
+| `--no-draft` | disable the draft model |
 | `--no-expose-direct` | do not publish the host ports; reach the servers only over the network |
 | `--long-model REPO FILE` | a different Hugging Face GGUF for `shuttle-long` |
 | `--fast-model REPO FILE` | the same for `shuttle-fast` |
@@ -795,9 +821,9 @@ alongside from M2. M8 is independent of all of it.
   reduction above that completes it.
 - **M2 — sessions, prefix cache and reliability.** Partly done. The
   evaluation set, the sessions over the KV cache, the schema-constrained
-  output, best-of-n with a verifier and the cascade are in; the cascade is
-  measured and left off, for the reason given above. Still missing: n-gram
-  speculative decoding for the tasks whose output copies their input.
+  output, best-of-n with a verifier, the cascade and the n-gram lookup are
+  all in. The last two are measured and left off by default, for the reasons
+  given above. Nothing of M2 is outstanding.
 - **M3 — documents.** OCR and indexing ported from
   [WEFT](https://github.com/FPGArtktic/weft-mcp): Tesseract and Poppler in a
   container with no network, the text layer first and OCR only for pages
