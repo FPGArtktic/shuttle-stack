@@ -33,6 +33,7 @@ and M2 the evaluation that says how far either can be trusted.
 | `ask_file` | working — answers from a file, or says the file does not answer; narrows by regexp |
 | `classify_file` | working — labels enforced by a schema, votes across parts, reports agreement |
 | `extract` | working — fields enforced by a schema, narrows by regexp; refuses a file that needs more than one part |
+| `start_job` / `get_status` / `get_result` | working — a file tool run in the background, polled and collected |
 | Evaluation set | working — twenty cases with known answers, two of them refusals; 20/20 on the long server, 18/20 on the fast one |
 | Profiles | working — `long`, `fast`, `extract`; endpoint, sampling and report limit, overridable in `profiles.toml` |
 | Report limit and run files | working — a thousand tokens back, the whole output to `.shuttle/runs/<id>.md` |
@@ -240,9 +241,13 @@ and the instructions repeat it.
 | Tool | Takes | Returns |
 |---|---|---|
 | `status` | nothing | which servers answer, their models and contexts |
-| `summarize_file` | path, words, focus, server | one summary, however many parts the file needed |
-| `classify_file` | path, labels, question, server | one of the labels, the vote and the agreement |
-| `extract` | path, JSON schema, instructions, server | the fields, in the shape asked for |
+| `summarize_file` | path, words, focus, profile | one summary, however many parts the file needed |
+| `ask_file` | path, question, pattern, context, words, profile | the answer, or that the file does not answer |
+| `classify_file` | path, labels, question, profile | one of the labels, the vote and the agreement |
+| `extract` | path, JSON schema, instructions, pattern, context, profile | the fields, in the shape asked for |
+| `start_job` | a tool name and its arguments | a job id, at once |
+| `get_status` | a job id | queued, running, done or failed, with the time |
+| `get_result` | a job id | the finished answer, as the tool would have returned it |
 
 Labels and field shapes are enforced by llama-server through a response
 format, so an answer is valid by construction rather than by parsing hope.
@@ -263,6 +268,28 @@ Qwen3 reasons before answering by default, and that reasoning is spent from
 the same budget as the answer. The delegate turns it off. Left on, a request
 with 200 tokens to spend returns an empty string and a finish reason of
 `length`.
+
+### Jobs, when waiting is not an option
+
+Summarising a 35 KB file takes about a minute on the reference machine, and
+asking for four hundred words of it took four. A client that blocks on an
+answer that long gives up before the server produces one.
+
+`start_job` takes the name of one of the four file tools and the arguments
+you would have passed it, and returns a job id in a hundredth of a second.
+`get_status` says whether it is queued, running, done or failed, and how long
+it has waited and run. `get_result` returns exactly what the tool would have
+returned, run file and token count included; a job still running is an error
+saying to poll again rather than an empty answer, and a failed one carries
+its reason in the status.
+
+There is one worker. The long server answers one request at a time, so a
+queue that pretended otherwise would only move the waiting somewhere less
+visible. The newest sixty-four settled jobs are kept and the rest forgotten.
+
+Everything a job does is recorded exactly as a direct call is: the same
+report limit, the same run file, the same line in the audit log. The two
+paths differ in who waits and in nothing else.
 
 ### Profiles
 
