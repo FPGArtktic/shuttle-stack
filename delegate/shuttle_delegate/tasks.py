@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from .backend import Backend, Completion
@@ -125,7 +125,6 @@ class Work:
     calls: int = 0
     tokens: int = 0
     truncated: bool = False
-    _answers: list[str] = field(default_factory=list)
 
     def record(self, answer: Completion) -> str:
         self.calls += 1
@@ -177,7 +176,11 @@ def fit(backend: Backend, text: str, n_predict: int) -> list[str]:
         chunks = chunk(text, limit)
         if not chunks:
             return []
-        used = backend.count_tokens(max(chunks, key=len))
+        # The longest chunk in characters is not the heaviest in
+        # tokens: a table of numbers out-tokenises prose of twice its
+        # length, and checking only the longest let the dense one
+        # through to be truncated by the server.
+        used = max(backend.count_tokens(piece) for piece in chunks)
         if used <= allowed:
             return chunks
         limit = max(1, limit * allowed // used * 95 // 100)
@@ -255,6 +258,11 @@ def summarise(
             for piece in chunks
         ]
         folded = fit(backend, "\n\n".join(parts), n_predict)
+        if not folded:
+            raise TaskError(
+                "summarising the parts produced nothing; the server "
+                "returned empty completions"
+            )
         if len(folded) >= len(chunks):
             raise TaskError(
                 "the parts are not getting shorter; ask for a shorter "
@@ -280,9 +288,11 @@ def _answered(text: str) -> bool:
 
     The sentinel is asked for verbatim, and any appearance of it is
     read as a refusal: a part that mentions it while also answering is
-    a part whose answer cannot be trusted either way.
+    a part whose answer cannot be trusted either way. An empty
+    completion is not an answer either, and counting one as an answer
+    produced a found and verified result with nothing in it.
     """
-    return MISSING not in text.upper()
+    return bool(text.strip()) and MISSING not in text.upper()
 
 
 def _parts(
@@ -293,19 +303,25 @@ def _parts(
     words: str,
     n_predict: int,
     temperature: float | None,
-) -> list[str]:
-    """What each part of the text says, dropping the parts that refuse."""
-    said = [
-        work.record(
+) -> list[tuple[int, str]]:
+    """What each part says, keeping which part said it.
+
+    The index is kept because a retry must ask only the parts that
+    answered: re-asking a part that refused, warmer, is exactly the
+    sampling-until-something-comes-back this code refuses to do.
+    """
+    said = []
+    for index, piece in enumerate(chunks):
+        answer = work.record(
             backend.chat(
                 ASK_ONE.format(question=question, words=words, text=piece),
                 n_predict,
                 temperature=temperature,
             )
         )
-        for piece in chunks
-    ]
-    return [answer for answer in said if _answered(answer)]
+        if _answered(answer):
+            said.append((index, answer))
+    return said
 
 
 def _join(
@@ -335,12 +351,18 @@ def _join(
             for piece in cut
         ]
         rounds += 1
-        if len(folded) >= len(pieces) or rounds > MAX_ROUNDS:
+        kept = [piece for piece in folded if piece.strip()]
+        if not kept:
+            raise TaskError(
+                "folding the part answers produced nothing; the server "
+                "returned empty completions"
+            )
+        if len(kept) >= len(pieces) or rounds > MAX_ROUNDS:
             raise TaskError(
                 "the part answers are not combining into one; ask a "
                 "narrower question or a shorter answer"
             )
-        pieces = folded
+        pieces = kept
     return pieces[0]
 
 
@@ -376,51 +398,74 @@ def ask(
     # The model saw `text` and nothing else, so that is what a
     # quotation in its answer has to have come from. An answer quoting
     # something that is not there is drawn again, warmer, because the
-    # citation is what makes the answer checkable at all. A refusal is
-    # never resampled: drawing again until something comes back would
-    # reward the model for inventing one.
-    answers: list[str] = []
-    answer = ""
-    grounded = Grounding()
+    # citation is what makes the answer checkable at all.
+    #
+    # Which parts refused is decided once, on the first and coldest
+    # draw, and a retry asks only the parts that answered. Re-asking a
+    # part that refused would be drawing again until something came
+    # back, which rewards the model for inventing an answer; and a
+    # warmer draw that refuses must not be able to throw away the
+    # answer an earlier one produced.
+    said: dict[int, str] = {}
+    best: tuple[str, Grounding] | None = None
     tried = 0
     for temperature in temperatures(attempts):
         tried += 1
-        answers = _parts(
-            backend, work, chunks, question, limit, n_predict, temperature
+        asking = sorted(said) if said else list(range(len(chunks)))
+        fresh = _parts(
+            backend,
+            work,
+            [chunks[i] for i in asking],
+            question,
+            limit,
+            n_predict,
+            temperature,
         )
-        if not answers:
+        said.update({asking[position]: answer for position, answer in fresh})
+        if not said:
             break
         answer = _join(
-            backend, work, answers, question, limit, n_predict, temperature
+            backend,
+            work,
+            [said[i] for i in sorted(said)],
+            question,
+            limit,
+            n_predict,
+            temperature,
         )
         grounded = check(answer, text)
+        # The best sample is kept rather than the last: a warmer draw
+        # can quote worse than the one before it.
+        if best is None or len(grounded.missing) < len(best[1].missing):
+            best = (answer, grounded)
         if grounded.ok:
             break
     report = {
         "parts": len(chunks),
-        "parts_answering": len(answers),
+        "parts_answering": len(said),
         "attempts": tried,
         "server": f"shuttle-{backend.role}",
     } | work.report()
     if pattern:
         report["matched_regions"] = matched
-    if not answers:
+    if best is None:
         return {
             "answer": "",
             "found": False,
             "verified": True,
             "note": "no part of the file answers this question",
         } | report
+    answer, grounded = best
     result = (
         {"answer": answer, "found": True, "verified": grounded.ok}
         | report
         | grounded.report()
     )
-    if len(answers) > 1:
+    if len(said) > 1:
         # A part that holds nothing may answer anyway rather than use
         # the sentinel, and the fold then blends it with a real answer.
         # The parts are returned so the caller can see that happen.
-        result["said_by_part"] = answers
+        result["said_by_part"] = [said[i] for i in sorted(said)]
     return result
 
 

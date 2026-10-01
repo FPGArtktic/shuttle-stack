@@ -15,6 +15,7 @@ from shuttle_delegate.tasks import (
     brainstorm,
     classify,
     extract,
+    fit,
     read_text,
     summarise,
     temperatures,
@@ -330,3 +331,110 @@ class AttemptsTest(unittest.TestCase):
         result = ask(backend, self.SOURCE, "the gateway?", attempts=3)
         self.assertTrue(result["verified"])
         self.assertEqual(result["attempts"], 2)
+
+
+class EmptyCompletionTest(unittest.TestCase):
+    """A server that answers with nothing must not crash or lie."""
+
+    LONG = "paragraph.\n\n" * 400
+
+    def test_summarise_refuses_an_empty_fold_instead_of_crashing(
+        self,
+    ) -> None:
+        backend = FakeBackend(n_ctx=1200, answers="")
+        with self.assertRaises(TaskError) as caught:
+            summarise(backend, self.LONG, words=20)
+        self.assertIn("empty completions", str(caught.exception))
+
+    def test_ask_refuses_an_empty_fold_instead_of_crashing(self) -> None:
+        backend = FakeBackend(n_ctx=1200, answers="")
+        result = ask(backend, self.LONG, "what?", words=20, attempts=1)
+        self.assertFalse(result["found"])
+
+    def test_an_empty_part_is_not_an_answer(self) -> None:
+        backend = FakeBackend(answers="   \n  ")
+        result = ask(backend, "a short document.", "what?", attempts=1)
+        self.assertFalse(result["found"])
+        self.assertEqual(result["answer"], "")
+        self.assertEqual(result["parts_answering"], 0)
+
+
+class RefusalStickinessTest(unittest.TestCase):
+    """A part that refused is left refused, whatever the retry does."""
+
+    SOURCE = "The gateway is 10.89.7.1.\n\n" * 300
+
+    def test_a_refusing_part_is_not_asked_again(self) -> None:
+        asked = []
+
+        def answer(n: int, prompt: str) -> str:
+            if "ANSWERS:" in prompt:
+                return 'folded "a sentence that is not in the source"'
+            asked.append(prompt[:40])
+            # the first part answers, every other part refuses
+            return (
+                'it says "a sentence that is not in the source"'
+                if len(asked) == 1
+                else "NOT IN THIS TEXT"
+            )
+
+        backend = FakeBackend(n_ctx=1400, answers=answer)
+        result = ask(backend, self.SOURCE, "gw?", words=20, attempts=2)
+        self.assertEqual(result["attempts"], 2)
+        # first attempt asked every part; the retry asked only the one
+        # that answered, so the total is parts + 1 rather than parts * 2
+        self.assertEqual(len(asked), result["parts"] + 1)
+
+    def test_a_retry_that_refuses_keeps_the_earlier_answer(self) -> None:
+        def answer(n: int, _: str) -> str:
+            if n == 1:
+                return 'it says "a sentence that is not in the source"'
+            return "NOT IN THIS TEXT"
+
+        backend = FakeBackend(answers=answer)
+        result = ask(backend, "a short document.", "what?", attempts=3)
+        self.assertTrue(result["found"])
+        self.assertIn("not in the source", result["answer"])
+        self.assertFalse(result["verified"])
+
+
+class BestSampleTest(unittest.TestCase):
+    """The sample kept is the best seen, not the last drawn."""
+
+    SOURCE = "The gateway is 10.89.7.1 and that is all.\n"
+
+    def test_a_worse_retry_does_not_replace_a_better_attempt(self) -> None:
+        def answer(n: int, _: str) -> str:
+            if n == 1:
+                return (
+                    'it says "The gateway is 10.89.7.1" and also '
+                    '"nothing at all like this in the file"'
+                )
+            return (
+                '"a first invention here" and "a second invention here" '
+                'and "a third invention here"'
+            )
+
+        backend = FakeBackend(answers=answer)
+        result = ask(backend, self.SOURCE, "gw?", attempts=2)
+        self.assertEqual(result["quotes_grounded"], 1)
+        self.assertIn("10.89.7.1", result["answer"])
+
+
+class DensityTest(unittest.TestCase):
+    """The chunk with the most tokens decides, not the longest one."""
+
+    def test_a_dense_chunk_is_not_let_through(self) -> None:
+        counted: list[str] = []
+
+        class Dense(FakeBackend):
+            def count_tokens(self, text: str) -> int:
+                counted.append(text)
+                # a chunk of digits costs a token per character
+                digits = sum(c.isdigit() for c in text)
+                return max(1, digits + len(text) // 3)
+
+        text = "prose and more prose here.\n\n" * 300 + "1234567890" * 400
+        backend = Dense(n_ctx=2000)
+        fit(backend, text, 200)
+        self.assertGreater(len(counted), 1)
