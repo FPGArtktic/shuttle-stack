@@ -58,6 +58,7 @@ dry_run=0
 assume_yes=0
 use_gpu=1
 use_draft=1
+use_ngram=0
 expose_direct=1
 opt_ctx=""
 opt_ngl=""
@@ -147,7 +148,8 @@ Options:
   --layers N                 layers of the long model (default: 36)
   --draft-layers N           layers of the draft model (default: 28)
   --no-gpu                   run shuttle-long on the CPU as well
-  --no-draft                 disable speculative decoding on shuttle-long
+  --no-draft                 disable the draft model on shuttle-long
+  --ngram                    add the n-gram lookup (measured: no gain)
   --expose-direct            publish 127.0.0.1:8081 and :8082 (default)
   --no-expose-direct         reach the servers only via the shuttle network
   --long-model REPO FILE     Hugging Face GGUF for shuttle-long
@@ -330,6 +332,7 @@ parse_args()
 		--yes)			assume_yes=1 ;;
 		--no-gpu)		use_gpu=0 ;;
 		--no-draft)		use_draft=0 ;;
+		--ngram)		use_ngram=1 ;;
 		--expose-direct)	expose_direct=1 ;;
 		--no-expose-direct)	expose_direct=0 ;;
 		--ctx|--ngl|--threads|--layers|--draft-layers|\
@@ -866,23 +869,39 @@ explain_ngl()
 		"$(( kv_kib / 1024 )) MiB at ctx $long_ctx"
 }
 
+# llama.cpp takes a list of speculators and tries them in its own order,
+# the n-gram lookup over the prompt before the draft model.  The lookup
+# needs no model and no VRAM, which is why it is offered at all, but it
+# is off by default: measured here it gained nothing, because narrowing
+# by pattern leaves a prompt of a few hundred tokens and an answer of
+# two fields or eighty words, so there is little to copy and few
+# chances to copy it.
 plan_draft()
 {
-	local draft=/models/${model_file[draft]}
+	local draft=/models/${model_file[draft]} types=""
 
+	if (( use_ngram )); then
+		types=ngram-simple
+	fi
+	if (( use_draft )); then
+		types=${types:+$types,}draft-simple
+	fi
+	if [[ -n $types ]]; then
+		server_env[long]+="LLAMA_ARG_SPEC_TYPE=$types"$'\n'
+	fi
+	plan_row long.spec "${types:-off}" \
+		"a spec type is required, as a draft model alone leaves" \
+		"speculative decoding off"
 	if (( ! use_draft )); then
 		plan_row long.draft off "--no-draft"
 		return 0
 	fi
-	server_env[long]+="LLAMA_ARG_SPEC_TYPE=draft-simple"$'\n'
 	server_env[long]+="LLAMA_ARG_SPEC_DRAFT_MODEL=$draft"$'\n'
 	server_env[long]+="LLAMA_ARG_N_GPU_LAYERS_DRAFT=$draft_ngl"$'\n'
 	server_env[long]+="LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K=q8_0"$'\n'
 	server_env[long]+="LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V=q8_0"$'\n'
 	plan_row long.draft "${model_file[draft]}" \
 		"speculative decoding, draft ngl $draft_ngl"
-	plan_row "" "" "spec type draft-simple: a draft model on its own" \
-		"leaves speculative decoding off"
 }
 
 plan_servers()
