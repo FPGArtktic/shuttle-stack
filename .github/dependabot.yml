@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# Two ecosystems, because two is how many this repository has. The
+# host needs bash, curl, jq and podman, none of which has a manifest;
+# everything else is either the delegate's Python or the actions the
+# workflows pin.
+#
+# Not here, and why:
+#
+#   docker - Dependabot's docker ecosystem looks for a file named
+#   `Dockerfile`, and the images here are `containers/Containerfile.*`
+#   as the OCI name has it. An entry for it would be a silent no-op,
+#   so the base images are watched by hand until
+#   dependabot/dependabot-core#6067 is resolved.
+#
+#   The dependency graph itself does not read `uv.lock` yet, so the
+#   graph on the repository page stays empty while Dependabot below
+#   still raises alerts and pull requests from the same file. The only
+#   way to fill the graph today is a `requirements.txt` exported from
+#   the lock, which is a second copy of the same versions and a second
+#   thing to get out of step.
+version: 2
+
+updates:
+  - package-ecosystem: "uv"
+    directory: "/delegate"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+    commit-message:
+      # The repository's subsystems, so a Dependabot commit reads like
+      # every other commit in the log.
+      prefix: "delegate:"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "build:"
