@@ -79,6 +79,12 @@ MAX_IN_DOCUMENT = 1000
 # one. A report of five thousand lines has 483 of them, which is a
 # listing nobody reads; forty is a table of contents.
 MAX_CONTENTS = 40
+# How many of them a narrowed search carries. Fewer, because they are
+# paid for out of the same budget as the excerpts.
+IN_SEARCH = 12
+# Below this a section is a line of a contents page rather than a
+# place to read, so it is left out of the listing.
+WORTH_NAMING = 80
 TIMEOUT = 300.0
 # How many each side contributes before fusion. Wider than the answer
 # because the whole point of two channels is that a section ranked
@@ -968,6 +974,18 @@ def _look(
     }
     if file:
         about["within"] = file
+        # What the document holds, beside what matched. The ranking
+        # answers which section fits the question, and the question
+        # the loop sends is its whole request: asked `From
+        # top.flow.rpt pull these fields exactly as the report writes
+        # them: Revision Name, ...` the prose put `Flow OS Summary`
+        # ahead of `Flow Summary`, and the model read three wrong
+        # sections without ever learning the right one existed.
+        # `read_section` answers with this list when given a file
+        # alone, and the model never called it that way; a search is
+        # where it always looks. _trim fits the whole reply into the
+        # budget, so the names are paid for out of the excerpts.
+        about["sections"] = _names(db, file)
     if note:
         about["degraded"] = note
     return hits, about
@@ -1013,6 +1031,29 @@ def section(
             for row in rows[1:MORE_SECTIONS]
         ]
     return answer
+
+
+def _names(db: sqlite3.Connection, name: str) -> list[str]:
+    """The document's section names, for a narrowed search to carry.
+
+    A section holding almost nothing is not somewhere to read, and a
+    report's table of contents is a run of them -- one line each,
+    first in the file. Listing by order alone, the twelve names a
+    report of sixty-nine sections could show were twelve lines of its
+    contents page and not one place with anything in it.
+    """
+    rows = db.execute(
+        "SELECT page, heading FROM chunks WHERE document = ?"
+        " AND LENGTH(text) >= ? ORDER BY ordinal LIMIT ?",
+        (name, WORTH_NAMING, IN_SEARCH + 1),
+    ).fetchall()
+    held = [
+        str(row["heading"] or f"page {row['page']}")
+        for row in rows[:IN_SEARCH]
+    ]
+    if len(rows) > IN_SEARCH:
+        held.append(f"... and more than {IN_SEARCH}")
+    return held
 
 
 def _contents(db: sqlite3.Connection, name: str) -> dict[str, Any]:

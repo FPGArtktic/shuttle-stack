@@ -686,11 +686,50 @@ class WithinTest(IndexTest):
         self.assertEqual({one["file"] for one in got["hits"]}, {"two.rpt"})
         self.assertEqual(got["within"], "two.rpt")
 
+    def test_a_narrowed_search_carries_the_document_contents(
+        self,
+    ) -> None:
+        """The ranking answers what matches the question; this answers
+        what is there. Measured: asked for a report's fields, the loop
+        read three wrong sections and never learnt the right one
+        existed, because it never called read_section with the file
+        alone and a search is where it always looks."""
+        self.feed(
+            one_rpt=[
+                Section(1, "Flow Summary", "Revision Name counter " * 6),
+                Section(2, "Flow OS Summary", "the operating system " * 6),
+            ]
+        )
+        got = self.ask_in("the revision name", "one.rpt")
+        self.assertEqual(got["sections"], ["Flow Summary", "Flow OS Summary"])
+
+    def test_a_contents_page_line_is_not_named_as_a_place(self) -> None:
+        """A report's contents is a run of one-line sections, first in
+        the file, and listing by order showed nothing else."""
+        self.feed(
+            one_rpt=[Section(1, f"{n}. Something", "x") for n in range(1, 14)]
+            + [Section(1, "Flow Summary", "Revision Name counter " * 6)]
+        )
+        got = self.ask_in("the revision name", "one.rpt")
+        self.assertEqual(got["sections"], ["Flow Summary"])
+
+    def test_a_long_contents_in_a_search_says_there_is_more(self) -> None:
+        self.feed(
+            one_rpt=[
+                Section(1, f"Part {n}", "a sentence with words in it " * 4)
+                for n in range(indexing.IN_SEARCH + 3)
+            ]
+        )
+        got = self.ask_in("words", "one.rpt")
+        self.assertEqual(len(got["sections"]), indexing.IN_SEARCH + 1)
+        self.assertIn("and more than", got["sections"][-1])
+
     def test_without_a_file_the_whole_index_is_searched(self) -> None:
         self.two()
         got = self.ask("what is the revision name")
         self.assertGreaterEqual(len({one["file"] for one in got["hits"]}), 2)
         self.assertNotIn("within", got)
+        self.assertNotIn("sections", got)
 
     def test_a_path_is_taken_by_its_name(self) -> None:
         self.two()
