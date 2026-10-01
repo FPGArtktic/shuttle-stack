@@ -19,7 +19,7 @@ and M2 the evaluation that says how far either can be trusted.
 
 | Component | State |
 |---|---|
-| `install.sh` phases | working — `detect plan host gpu quadlets models verify bench docs delegate status`, each runnable on its own |
+| `install.sh` phases | working — `detect plan host gpu quadlets models verify bench docs delegate sweep status`, each runnable on its own |
 | `shuttle-long` | working — Qwen3-8B Q4_K_M, partial GPU offload through CDI, one slot |
 | `shuttle-fast` | working — Qwen3-1.7B Q8_0, CPU only, four parallel slots |
 | Speculative decoding | working — Qwen3-0.6B draft, 2.15x on generation where it fits in VRAM |
@@ -32,12 +32,14 @@ and M2 the evaluation that says how far either can be trusted.
 | `summarize_file` | working — folds a file larger than the context into one summary |
 | `ask_file` | working — answers from a file, or says the file does not answer; narrows by regexp |
 | `classify_file` | working — labels enforced by a schema, votes across parts, reports agreement |
-| `extract` | working — fields enforced by a schema, narrows by regexp; refuses a file that needs more than one part |
+| `extract` | working — fields enforced by a schema, narrows by regexp; refuses a file that needs more than one part, and an answer cut off by the output cap |
 | `brainstorm` | working — several options, shape fixed by a schema, content explicitly unverified |
 | N-gram lookup | working, off by default — measured no gain, and slightly slower with no draft model |
 | Cascade | working, and not worth switching on here — the ladder verified on the first profile every time, and cost 3.2x the seconds |
 | Best-of-n | working — a sample failing its verifier is drawn again, warmer; 1.00 attempts per case over the evaluation set |
-| Document index | working — sections in Qdrant with file and page, searched by meaning, answers under 300 tokens |
+| Document index | working — one SQLite file, BM25 and vectors fused, sections cited by file, page and clause, answers under 300 tokens |
+| Source index | working — Tree-sitter units for twelve languages, cited by file and line range; falls back to blank-line blocks and says why |
+| Search cache | working — a repeated search served from the file, 15x faster, invalidated by the index changing rather than by the clock |
 | PDF documents | working — text layer first, OCR only for the pages without one, in a container with no network |
 | Sessions | working — a document read once and asked repeatedly; the transcript is the record, the KV dump only a cache |
 | `start_job` / `get_status` / `get_result` | working — a file tool run in the background, polled and collected |
@@ -45,7 +47,7 @@ and M2 the evaluation that says how far either can be trusted.
 | Profiles | working — `long`, `fast`, `extract`; endpoint, sampling and report limit, overridable in `profiles.toml` |
 | Report limit and run files | working — a thousand tokens back, the whole output to `.shuttle/runs/<id>.md` |
 | Audit log | working — one JSONL line per call in `.shuttle/audit.jsonl`, success or failure |
-| Citation grounding | working — a quoted span absent from the source is listed rather than trusted |
+| Citation grounding | working — a quoted span absent from the source is listed rather than trusted; compared without markup, wrapping or spacing |
 | Ubuntu 24.04 | not yet on hardware — the dry runs pass in CI, the system-changing phases have only been run on Arch |
 
 Neither milestone includes any of the following, and no placeholders are left
@@ -108,9 +110,18 @@ separate step, described under *Delegating* below.
 ```
             MCP client (Claude Code, Claude Desktop, ...)
                                |
-                        stdio: four tools
+                         stdio: 16 tools
                                |
                    shuttle-delegate, on the host
+                               |
+                               +--> .shuttle/documents.sqlite
+                               |      FTS5 for BM25, sqlite-vec
+                               |      for the vectors, one file
+                               |
+                               +--> shuttle-docs container
+                               |      Poppler, Tesseract,
+                               |      Tree-sitter; --network=none
+                               |      and one directory read-only
                                |
               127.0.0.1:8081   |   127.0.0.1:8082
             +------------------+------------------+
@@ -151,6 +162,7 @@ The installer writes these files, and nothing else:
 | `~/.config/shuttle/stack.env` | URLs, addresses and ports, for callers |
 | `.shuttle/runs/<id>.md` | the whole output of each call, beside the working directory |
 | `.shuttle/audit.jsonl` | one line per call |
+| `.shuttle/documents.sqlite` | the index: sections, source units, vectors, and the kept searches |
 | `~/.config/containers/systemd/shuttle.network` | the internal network unit |
 | `~/.config/containers/systemd/shuttle-long.container` | the long server unit |
 | `~/.config/containers/systemd/shuttle-fast.container` | the fast server unit |
@@ -287,9 +299,10 @@ and the instructions repeat it.
 | `classify_file` | path, labels, question, profile | one of the labels, the vote and the agreement |
 | `extract` | path, JSON schema, instructions, pattern, until, context, attempts, cascade_profiles, profile | the fields, in the shape asked for |
 | `brainstorm` | a request, optionally a path | several options, marked unverified |
-| `index_document` | path, collection, heading | how many sections went in, and whether by heading or page |
-| `search_docs` | a question, collection, limit | a few sections with file, page and heading, under 300 tokens |
-| `list_indexed_docs` | collection | which documents are in it, with sections and pages |
+| `index_path` | path, heading | for a document, how many sections and whether by heading or page; for source, the language, the units and how they were cut |
+| `search_docs` | a question, limit | a few sections with file, page and heading, under 300 tokens |
+| `search_code` | a question, limit | a few units with file and line range, under 300 tokens |
+| `list_indexed` | nothing | the documents with their sections and pages, the source files with their language |
 | `session_open` | path, words, pattern, until, context, profile | a session id, the document read and cached |
 | `session_ask` | a session id and a question | the answer, with the cache restored rather than the document resent |
 | `session_close` | a session id | the cache dropped, the transcript kept |
@@ -319,27 +332,59 @@ with 200 tokens to spend returns an empty string and a finish reason of
 
 ### The index, for a question you cannot turn into a pattern
 
-`pattern` needs you to know the wording. `index_document` reads a document
-into Qdrant so `search_docs` can find the right part of it by meaning
-instead, and every hit says which file, page and section it came from. The
-citation is the point: an answer that names its page can be checked, and one
-that does not cannot.
+`pattern` needs you to know the wording. `index_path` reads a document into
+the index so `search_docs` can find the right part of it without one, and
+every hit says which file, page and clause it came from. The citation is the
+point: an answer that names its page can be checked, and one that does not
+cannot.
 
 ```
                                     tokens  cited
-absolute maximum supply voltage        264  07447_datasheet.pdf page 3
+absolute maximum ratings               296  07447_datasheet.pdf page 3
+what limits the output current         284  07447_datasheet.pdf page 3
 how long may a commit subject be       262  CONTRIBUTING.md "## Commits"
 what package types are available       279  07447_datasheet.pdf page 11
-propagation delay time limits          269  07447_datasheet.pdf page 4
 ```
 
-Three facts about it are worth knowing before you use it.
+**The index is one file.** `~/.shuttle/documents.sqlite`, or wherever
+`SHUTTLE_INDEX` points. FTS5 holds the lexical half and sqlite-vec the
+vectors, in the tables [WEFT](https://github.com/FPGArtktic/weft-mcp)'s OCR
+module already writes, so a document indexed there is searchable here and a
+copy for a machine with no network is one `cp`. Nothing else has to be
+installed or kept running.
+
+**Both halves are asked, because they fail differently.** A register name or
+a clause number is a lexical question: FTS5 finds `TIMER0` or `4.2.1`, and a
+vector search is as likely to return the paragraph beside it. "what resets
+the peripheral" is the opposite, and BM25 cannot see the word the document
+used instead. Measured on the 37-page datasheet cut into 44 sections, over
+40 questions that are a term appearing in exactly one section and 22 written
+by `shuttle-long` from the section each answers:
+
+| | exact term | phrased question |
+|---|---|---|
+| BM25 alone | 39/40 | 14/22 |
+| vectors alone | 13/40 | 17/22 |
+| the two fused | 39/40 | 16/22 |
+
+Neither half is usable alone. The rankings are fused by reciprocal rank
+rather than by score, because a BM25 score and a cosine distance share no
+scale and normalising them would mean inventing one; the reply says which
+half found each hit. MMR then drops the second copy of a section the
+document repeats, which a datasheet does on every page.
+
+Dropping the common terms from the lexical half looked obviously right and
+earned nothing: across those 62 questions, thresholds from a quarter of the
+index to all of it gave identical recall, and a tenth lost one. A
+44-section index is too small for document frequency to tell "before" from
+"absolute"; both appear once.
 
 **The budget is in tokens, not characters.** 1066 characters of a datasheet's
-dot leaders and numbers come to 549 tokens — half a token a character against
-a third for prose — so the excerpts are trimmed by measurement until the
-whole answer fits 300. A character limit would have been two very different
-answers for the same number.
+numbers come to 549 tokens — half a token a character against a third for
+prose — so the excerpts are trimmed by measurement until the whole answer
+fits 300. When the citations alone fill the budget, a hit is dropped and the
+reply says so: three source units cost 277 tokens before a character of
+their text, and two units somebody can read beat three nobody can.
 
 **Sections come from headings, or from pages, and the reply says which.** A
 heading is a numbered clause or a Markdown heading whose number is followed
@@ -358,20 +403,64 @@ citation at all.
 The embeddings are bge-m3 through Ollama, on the CPU. On the GPU it is 43 ms
 a section against 62, and it takes 289 MiB of the card `shuttle-long` is
 using: nineteen milliseconds is not worth taking memory from the server that
-answers the questions.
+answers the questions. If Ollama cannot be reached the lexical half still
+answers and the reply carries a `degraded` note, because a search that had
+quietly become a grep is worse than one that failed.
 
-Only the collection you name is touched, `shuttle_docs` by default. Qdrant
-may be shared with other work — on the reference machine it is — and nothing
-here reaches into a collection it did not make.
+Indexing is not quick: the 37-page datasheet takes 96 seconds, of which 25 is
+reading it and 71 is embedding 44 sections. Do it once per document, with
+`start_job` if you would rather not wait. Asking is quick — 0.13 s, and 8.9 ms
+for a question already asked, which is 15 times faster and the reason the
+cache exists. A cached answer says how old it is, and is thrown away the
+moment anything is indexed rather than when an hour is up.
 
-Indexing is not quick: the 37-page datasheet takes 95 seconds, of which 25 is
-reading it and the rest is embedding 44 sections. Do it once per document,
-with `start_job` if you would rather not wait.
+### Source, cut into the units its language defines
+
+`index_path` on a `.sv`, `.vhd`, `.bb`, `.dts`, `.c`, `Kconfig`, `Makefile`,
+`.tcl` or `.sh` file sends it to `shuttle-docs` to be parsed instead of read,
+and `search_code` then answers with a place to open rather than a file to
+read:
+
+```
+do_install                        passt_git.bb       lines 29-31  function_definition do_install
+debouncer                         debouncer.sv       lines 19-35  module_declaration header debouncer
+which module divides the clock    clk_tick.v         lines 20-29  module_declaration header clk_tick
+the clock period constraint       counter.sdc        line 5
+```
+
+The units are the ones an engineer would name a file by: C functions,
+structs, enums and typedefs; Bash and Python functions; Verilog and
+SystemVerilog modules, packages, interfaces, always and initial blocks,
+functions and tasks; VHDL entities, architectures, packages and processes;
+device tree nodes; Kconfig entries; Make rules; Tcl procs; BitBake tasks and
+python functions. A run of nodes that is no unit of its own becomes one,
+which is what makes a recipe's SUMMARY, LICENSE, SRC_URI and DEPENDS a unit
+without a rule for it. A module yields what comes before its first inner
+unit rather than itself, so its ports are findable without indexing the whole
+module twice over.
+
+**The grammars are checked, not trusted.** They are community-maintained and
+the design says so. The test is what came out, not how many error nodes the
+parse holds: `tree-sitter-c` leaves 84 % of a preprocessor-heavy
+`tclAppInit.c` inside error nodes and still finds `main` and `Tcl_AppInit` at
+the right lines, while `tree-sitter-tcl` fails on git-gui's 1370-line
+`blame.tcl` so completely that the tree holds one unnamed blob of the whole
+file. The first is kept; the second falls back to blank-line blocks and the
+reply says why. Over 20 files of VHDL, SystemVerilog, Verilog, BitBake, Make
+and Tcl, 15 parsed into units and 5 fell back — four recipes whose shell
+bodies the BitBake grammar cannot follow, and one constraint file.
+
+The grammars are fetched when the image is built, never at runtime: the
+container runs with `--network=none` and could not fetch one if it wanted to.
+
+Indexing source costs what indexing prose costs, and for the same reason: 20
+files and 113 units took 190 seconds, nearly all of it bge-m3 on the CPU.
 
 ### PDFs
 
 A path may be a PDF, anywhere a path is taken. It is extracted in the
-`shuttle-docs` image — Tesseract and Poppler and nothing else — run with
+`shuttle-docs` image — Poppler, Tesseract and Tree-sitter and nothing else —
+run with
 `--network=none`, `--read-only`, and only that document's own directory
 mounted read only. A document is data and never a program: one that tries
 something cannot reach the network, cannot write, and cannot see another
@@ -754,7 +843,20 @@ commands nor in `install.log`.
 
 The two `.env` files are plain `KEY=value` and are read by the container at
 start. They are regenerated by the `quadlets` phase, so edit the flags rather
-than the files.
+than the files. `quadlets/` holds the three units this machine produced, as
+examples to read rather than to copy.
+
+The delegate takes a handful of environment variables, all with defaults
+that work on a machine the installer set up:
+
+| Variable | Effect |
+|---|---|
+| `SHUTTLE_HOME` | where runs, sessions and the audit log go; `./.shuttle` by default |
+| `SHUTTLE_INDEX` | the index file; `$SHUTTLE_HOME/documents.sqlite` by default. Point it at WEFT's `documents.sqlite` to share one |
+| `SHUTTLE_SEARCH_TTL` | seconds a search result is served from the cache, 3600 by default; 0 switches the cache off |
+| `SHUTTLE_EMBED_URL` | Ollama, for the embeddings; `http://127.0.0.1:11434` |
+| `SHUTTLE_EMBED_MODEL` | the embedding model, `bge-m3` |
+| `SHUTTLE_DOCS_IMAGE` | the extraction and parsing image, `localhost/shuttle-docs` |
 
 To change a model, pass the repository and the file name and rerun the two
 phases that depend on them:
@@ -913,20 +1015,24 @@ alongside from M2. M8 is independent of all of it.
   output, best-of-n with a verifier, the cascade and the n-gram lookup are
   all in. The last two are measured and left off by default, for the reasons
   given above. Nothing of M2 is outstanding.
-- **M3 — documents.** Mostly done: the `shuttle-docs` container, the reading,
-  and the index with its three tools (see *PDFs* and *The index* above).
-  Still to come: the digestion the plan asks for — section summaries and
-  tables pulled into JSON ahead of time — which is overnight work and
-  belongs with M6.
+- **M3 — documents and code.** Mostly done: the `shuttle-docs` container,
+  the reading, the Tree-sitter chunking for twelve languages, and the hybrid
+  index with its four tools (see *PDFs*, *The index* and *Source* above). A
+  register table comes out of a datasheet as valid JSON with the values the
+  page does not contain named rather than returned. Still to come: the
+  digestion the plan asks for — section summaries and tables pulled into
+  JSON ahead of time — which is overnight work and belongs with M6.
 - **M4 — isolation and hardening.** The direct ports off, a bearer token on
   the delegate, the delegate itself as a Quadlet unit, the audit log rotated,
   and a network audit confirming there is still no egress.
 - **M5 — constrained agents.** A ReAct loop of its own, each run in a
   container with `--network=none` and only the task directory mounted, driven
   by a preset that names the command which verifies the result.
-- **M6 — batch work.** systemd timers watching directories: new documents
-  indexed and digested overnight, caches refreshed, and a morning report
-  short enough to read in a thousand tokens.
+- **M6 — batch work.** Partly done: the timer, the watched directories, and
+  the overnight indexing of both documents and source, with a morning report
+  short enough to read in a thousand tokens. Still to come: the digestion,
+  the refreshed KV dumps, and an answer cache that serves a repeated
+  question without reaching a model at all.
 - **M7 — distillation.** QLoRA on what the audit log recorded, evaluated
   against the golden set, the adapter exported as GGUF with the base model's
   hash pinned to it.
