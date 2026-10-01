@@ -420,8 +420,15 @@ BUILT_IN: dict[str, Preset] = {
         schema={
             "type": "object",
             "properties": {
-                "fields": {"type": "object"},
-                "cited": {"type": "array", "items": {"type": "string"}},
+                # Must hold something. An extraction that found no
+                # field is not an extraction, and an empty object
+                # grounds against anything.
+                "fields": {"type": "object", "minProperties": 1},
+                "cited": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                },
             },
             "required": ["fields", "cited"],
         },
@@ -763,6 +770,32 @@ def _perform(
     return f"{call.name!r} is not a tool I have", False
 
 
+def _too_few(schema: dict[str, Any], report: dict[str, Any]) -> list[str]:
+    """Fields the schema asks to hold something and that hold nothing.
+
+    An empty object satisfies `required` and grounds against anything,
+    because there is nothing in it to look for. A doc-extract run that
+    read the wrong sections and found no field at all reported itself
+    verified on exactly that: `"fields": {}` with a schema check that
+    said the report had the fields the preset asks for. Nothing cannot
+    have come from a tool answer.
+
+    `minProperties` and `minItems` are the schema's own words for it,
+    so the decoding grammar is told the same thing the check is.
+    """
+    out = []
+    for key, rule in schema.get("properties", {}).items():
+        if not isinstance(rule, dict) or key not in report:
+            continue
+        held = report[key]
+        least = rule.get("minProperties", rule.get("minItems"))
+        if not isinstance(least, int):
+            continue
+        if isinstance(held, dict | list) and len(held) < least:
+            out.append(key)
+    return out
+
+
 def _check_report(
     run: Run, preset: Preset, report: dict[str, Any], shown: str
 ) -> tuple[bool, list[str]]:
@@ -781,8 +814,12 @@ def _check_report(
             for key in preset.schema.get("required", [])
             if key not in report
         ]
+        empty = _too_few(preset.schema, report)
         if missing:
             said.append("the report is missing " + ", ".join(missing))
+            ok = False
+        elif empty:
+            said.append("the report has nothing under " + ", ".join(empty))
             ok = False
         else:
             said.append("the report has the fields the preset asks for")

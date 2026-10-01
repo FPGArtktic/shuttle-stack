@@ -171,6 +171,70 @@ class LoopTest(unittest.TestCase):
         self.assertFalse(run.verified)
         self.assertIn("not moving", run.stopped)
 
+    def test_a_field_that_must_hold_something_and_holds_nothing(
+        self,
+    ) -> None:
+        """Measured: a run that read the wrong sections and found no
+        field reported itself verified on `"fields": {}`, because an
+        empty object satisfies `required` and grounds against
+        anything."""
+        preset = Preset(
+            name="x",
+            tools=("finish",),
+            schema={
+                "type": "object",
+                "properties": {
+                    "fields": {"type": "object", "minProperties": 1}
+                },
+                "required": ["fields"],
+            },
+            ground=("fields",),
+        )
+        run = self.run_with(
+            preset,
+            *[[call("finish", report={"fields": {}})] for _ in range(4)],
+        )
+        self.assertFalse(run.verified)
+        self.assertTrue(
+            any("nothing under fields" in one for one in run.checks)
+        )
+
+    def test_an_empty_list_is_refused_the_same_way(self) -> None:
+        preset = Preset(
+            name="x",
+            tools=("finish",),
+            schema={
+                "type": "object",
+                "properties": {"cited": {"type": "array", "minItems": 1}},
+                "required": ["cited"],
+            },
+        )
+        run = self.run_with(
+            preset,
+            *[[call("finish", report={"cited": []})] for _ in range(4)],
+        )
+        self.assertFalse(run.verified)
+
+    def test_a_field_with_no_minimum_may_be_empty(self) -> None:
+        """log-triage reports no errors on a log with none wrong."""
+        preset = Preset(
+            name="x",
+            tools=("finish",),
+            schema={
+                "type": "object",
+                "properties": {"errors": {"type": "array"}},
+                "required": ["errors"],
+            },
+            ground=("errors",),
+        )
+        run = self.run_with(preset, [call("finish", report={"errors": []})])
+        self.assertTrue(run.verified, run.checks)
+
+    def test_every_built_in_that_must_find_something_says_so(self) -> None:
+        held = agent.BUILT_IN["doc-extract"].schema
+        assert held is not None
+        self.assertEqual(held["properties"]["fields"]["minProperties"], 1)
+
     def test_the_step_budget_stops_it(self) -> None:
         preset = Preset(
             name="x", tools=("finish",), schema=SHAPED, max_steps=2
