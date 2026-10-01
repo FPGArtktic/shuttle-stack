@@ -63,6 +63,14 @@ SECTION_CHARS = 6000
 EXCERPT_CHARS = 700
 SEARCH_TOKENS = 300
 MIN_EXCERPT = 60
+# How much of one section `section()` hands back. Named apart from
+# SECTION_CHARS above, which is how much of a section is stored: the
+# two are different questions and giving them one name quietly
+# changed the stored size, which the tests did not catch because they
+# check a section against whatever the constant says.
+READ_CHARS = 4000
+# How many sections to name when a heading matches several.
+MORE_SECTIONS = 5
 TIMEOUT = 300.0
 # How many each side contributes before fusion. Wider than the answer
 # because the whole point of two channels is that a section ranked
@@ -906,6 +914,88 @@ def _look(
     if note:
         about["degraded"] = note
     return hits, about
+
+
+def section(
+    db: sqlite3.Connection,
+    file: str,
+    heading: str = "",
+    page: int = 0,
+) -> dict[str, Any]:
+    """One stored section of a document, whole rather than excerpted.
+
+    A search answers with a few hundred tokens of each hit, which is
+    the right size for choosing where to look and the wrong one for
+    reading a register table out of it. This is the other half: name
+    a section a search cited and get what the index holds of it.
+
+    It is a lookup, like `find_references`: no model, no embedding, no
+    ranking. The index is the allowlist, so a document nobody indexed
+    has no sections to read, and nothing here opens a file.
+    """
+    name = Path(file).name
+    if not name:
+        raise IndexingError("a section needs a document to read it from")
+    rows = _sections_of(db, name, heading, page)
+    if not rows:
+        return {"file": name, "sections": [], "note": _nothing(db, name)}
+    held = str(rows[0]["text"])
+    answer: dict[str, Any] = {
+        "file": name,
+        "page": int(rows[0]["page"]),
+        "section": str(rows[0]["heading"] or ""),
+        "text": held[:READ_CHARS],
+    }
+    if len(held) > READ_CHARS:
+        answer["text_cut_at"] = READ_CHARS
+    if len(rows) > 1:
+        answer["others"] = [
+            f"page {row['page']}: {row['heading'] or 'no heading'}"
+            for row in rows[1:MORE_SECTIONS]
+        ]
+    return answer
+
+
+def _sections_of(
+    db: sqlite3.Connection, name: str, heading: str, page: int
+) -> list[sqlite3.Row]:
+    """The sections that answer to this heading or page, best first.
+
+    The heading is tried whole, then as the front of one, because a
+    search cites `3.2 Electrical characteristics` and a caller asks
+    for `3.2`. A page alone is the fallback for a document whose
+    sections were cut by page because it had no headings.
+    """
+    query = "SELECT page, heading, text FROM chunks WHERE document = ?"
+    args: list[Any] = [name]
+    if heading.strip():
+        query += " AND (heading = ? OR heading LIKE ? ESCAPE '\\')"
+        quoted = heading.strip().replace("\\", "\\\\")
+        quoted = quoted.replace("%", "\\%").replace("_", "\\_")
+        args += [heading.strip(), f"{quoted}%"]
+    if page > 0:
+        query += " AND page = ?"
+        args.append(page)
+    query += " ORDER BY ordinal LIMIT ?"
+    args.append(MORE_SECTIONS + 1)
+    return list(db.execute(query, args))
+
+
+def _nothing(db: sqlite3.Connection, name: str) -> str:
+    """Why there was no section, told apart from each other."""
+    row = db.execute(
+        "SELECT COUNT(*) AS n FROM chunks WHERE document = ?", (name,)
+    ).fetchone()
+    if row is None or not int(row["n"]):
+        return (
+            f"{name} is not an indexed document; index_path reads one in "
+            "and list_indexed says what is already there"
+        )
+    return (
+        f"{name} is indexed in {row['n']} sections and none of them "
+        "answers to that heading or page; search_docs cites them by the "
+        "names they have"
+    )
 
 
 def indexed(db: sqlite3.Connection | None = None) -> dict[str, Any]:

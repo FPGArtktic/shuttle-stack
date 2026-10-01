@@ -468,6 +468,93 @@ class IndexTest(unittest.TestCase):
         self.assertEqual(len(found), 1)
 
 
+class SectionTest(IndexTest):
+    """Reading one section whole, which a search deliberately does not."""
+
+    def sheet(self) -> None:
+        """Fed per test, not in setUp: the tests inherited from
+        IndexTest assume an index with nothing in it."""
+        self.feed(
+            sheet_pdf=[
+                Section(3, "3.1 Supply", "VDD is 3.3 V nominal."),
+                Section(4, "3.2 Timing", "The reset is 10 clock cycles."),
+                Section(5, "", "a page of numbers with no heading"),
+            ]
+        )
+
+    def test_a_section_comes_back_whole_rather_than_excerpted(self) -> None:
+        self.sheet()
+        got = indexing.section(self.db, "sheet.pdf", "3.1 Supply")
+        self.assertEqual(got["text"], "VDD is 3.3 V nominal.")
+        self.assertEqual(got["page"], 3)
+
+    def test_the_front_of_a_heading_is_enough(self) -> None:
+        """A caller asks for 3.2; a search cited the whole heading."""
+        self.sheet()
+        got = indexing.section(self.db, "sheet.pdf", "3.2")
+        self.assertEqual(got["section"], "3.2 Timing")
+
+    def test_a_page_serves_a_document_with_no_headings(self) -> None:
+        self.sheet()
+        got = indexing.section(self.db, "sheet.pdf", page=5)
+        self.assertIn("page of numbers", got["text"])
+
+    def test_a_path_is_taken_by_its_name(self) -> None:
+        self.sheet()
+        got = indexing.section(self.db, "/elsewhere/sheet.pdf", "3.1")
+        self.assertEqual(got["page"], 3)
+
+    def test_a_document_nobody_indexed_says_so(self) -> None:
+        got = indexing.section(self.db, "other.pdf", "3.1")
+        self.assertEqual(got["sections"], [])
+        self.assertIn("not an indexed document", got["note"])
+
+    def test_an_indexed_document_with_no_such_heading_says_that(
+        self,
+    ) -> None:
+        """Told apart from the one above: the two need different fixes."""
+        self.sheet()
+        got = indexing.section(self.db, "sheet.pdf", "9 Appendix")
+        self.assertIn("indexed in 3 sections", got["note"])
+
+    def test_several_matches_name_the_others(self) -> None:
+        self.feed(
+            many_md=[
+                Section(1, "3 One", "alpha"),
+                Section(2, "3 Two", "beta"),
+            ]
+        )
+        got = indexing.section(self.db, "many.md", "3 ")
+        self.assertEqual(got["text"], "alpha")
+        self.assertEqual(len(got["others"]), 1)
+        self.assertIn("3 Two", got["others"][0])
+
+    def test_a_long_section_is_cut_and_says_where(self) -> None:
+        """What is stored and what is handed back are two caps.
+
+        Giving them one name quietly shrank the stored one, and this
+        test did not catch it because it compared a section against
+        whatever the constant happened to say.
+        """
+        self.feed(big_md=[Section(1, "1 Long", "x" * 9000)])
+        got = indexing.section(self.db, "big.md", "1 Long")
+        self.assertEqual(len(got["text"]), indexing.READ_CHARS)
+        self.assertEqual(got["text_cut_at"], indexing.READ_CHARS)
+        stored = self.db.execute(
+            "SELECT LENGTH(text) AS n FROM chunks WHERE document = 'big.md'"
+        ).fetchone()
+        self.assertGreater(int(stored["n"]), indexing.READ_CHARS)
+
+    def test_a_wildcard_in_a_heading_is_text_not_a_pattern(self) -> None:
+        self.sheet()
+        got = indexing.section(self.db, "sheet.pdf", "3.%")
+        self.assertEqual(got["sections"], [])
+
+    def test_a_document_with_no_name_is_refused(self) -> None:
+        with self.assertRaises(IndexingError):
+            indexing.section(self.db, "")
+
+
 class BoxedHeadingTest(unittest.TestCase):
     """A report titles its sections in a box, not with a number.
 
