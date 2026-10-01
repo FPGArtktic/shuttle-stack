@@ -14,6 +14,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from . import (
+    agent,
     answers,
     audit,
     cascade,
@@ -386,6 +387,67 @@ def extract(
     if not cascade_profiles:
         return once(profile)
     return cascade.climb(cascade.ladder(cascade_profiles), once)
+
+
+@mcp.tool(
+    description="Run a bounded agent: the local model calls tools "
+    "until something verifies its report or a budget is spent. Every "
+    "preset has a verifier — a report schema, a grounding check "
+    "against what the tools returned, or a command that has to exit "
+    "zero — because a loop that decides for itself when it is "
+    "finished reports success. The built-in presets are repo-scout "
+    "for a question about the source with file:line, doc-qa for one "
+    "about the documents with a citation, and verify-loop for fixing "
+    "a file until a verifier passes. The reply is the report, the "
+    "budget that stopped it, and the directory holding the steps and "
+    "anything written. Agent runs are slow; start_job this tool."
+)
+@anticipated
+@recorded
+def agent_start(
+    task: str,
+    preset: str = "repo-scout",
+) -> dict[str, Any]:
+    known = agent.settings()
+    if preset not in known:
+        raise agent.AgentError(
+            f"{preset!r} is not a preset; the ones there are: "
+            + ", ".join(sorted(known))
+        )
+    return agent.start(backend, known[preset], task).summary()
+
+
+@mcp.tool(
+    description="List the agent presets, with the budget and the "
+    "verifier each one has. Read it before agent_start to see what a "
+    "preset may do and how it is checked."
+)
+@anticipated
+def agent_presets() -> dict[str, Any]:
+    out = []
+    for name, one in sorted(agent.settings().items()):
+        out.append(
+            {
+                "preset": name,
+                "tools": list(one.tools),
+                "steps": one.max_steps,
+                "tokens": one.max_tokens,
+                "seconds": one.max_seconds,
+                "verified_by": [
+                    what
+                    for what, yes in (
+                        ("a report schema", one.schema is not None),
+                        (
+                            "grounding " + ", ".join(one.ground),
+                            bool(one.ground),
+                        ),
+                        (" ".join(one.verifier), bool(one.verifier)),
+                    )
+                    if yes
+                ],
+            }
+        )
+    return {"presets": out}
 
 
 @mcp.tool(

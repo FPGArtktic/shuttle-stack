@@ -19,6 +19,51 @@ class BackendError(RuntimeError):
     """A server refused a request or did not answer."""
 
 
+def _calls(raw: list[dict[str, Any]]) -> tuple[Call, ...]:
+    """The tool calls in an answer, with their arguments parsed."""
+    out = []
+    for one in raw:
+        asked = one.get("function", {}) or {}
+        text = asked.get("arguments") or "{}"
+        broken = ""
+        parsed: dict[str, Any] = {}
+        try:
+            got = json.loads(text)
+            if isinstance(got, dict):
+                parsed = got
+            else:
+                broken = (
+                    f"the arguments are {type(got).__name__}, not an object"
+                )
+        except json.JSONDecodeError as error:
+            broken = f"the arguments are not JSON: {error}"
+        out.append(
+            Call(
+                id=str(one.get("id", "")),
+                name=str(asked.get("name", "")),
+                arguments=parsed,
+                broken=broken,
+            )
+        )
+    return tuple(out)
+
+
+@dataclass(frozen=True)
+class Call:
+    """One tool the model asked for, with the arguments it gave.
+
+    The arguments arrive as a JSON string and are parsed here rather
+    than at the caller: a model that writes `{"path": }` has asked for
+    a tool and got the arguments wrong, which is a step the loop can
+    tell it about, not a reason for the loop to stop.
+    """
+
+    id: str
+    name: str
+    arguments: dict[str, Any]
+    broken: str = ""
+
+
 @dataclass(frozen=True)
 class Completion:
     """One answer, with what it cost and whether it is whole."""
@@ -27,6 +72,7 @@ class Completion:
     tokens_in: int
     tokens_out: int
     truncated: bool = False
+    calls: tuple[Call, ...] = ()
 
     @property
     def tokens(self) -> int:
@@ -56,6 +102,25 @@ class Server(Protocol):
         n_predict: int,
         temperature: float | None = ...,
         schema: dict[str, Any] | None = ...,
+    ) -> Completion: ...
+
+
+class Conversational(Server, Protocol):
+    """A server that can hold a conversation and offer tools.
+
+    Separate from Server for the same reason Cache is: a summary has
+    no business being handed something that can run a tool loop, and
+    the protocol a function takes is the clearest statement of what it
+    is allowed to do.
+    """
+
+    def converse(
+        self,
+        messages: list[dict[str, Any]],
+        n_predict: int,
+        temperature: float | None = ...,
+        schema: dict[str, Any] | None = ...,
+        tools: list[dict[str, Any]] | None = ...,
     ) -> Completion: ...
 
 
@@ -151,8 +216,29 @@ class Backend:
         a budget spent on reasoning is a budget not spent on the answer.
         Left on, a short n_predict returns an empty string.
         """
+        return self.converse(
+            [{"role": "user", "content": prompt}],
+            n_predict,
+            temperature,
+            schema,
+        )
+
+    def converse(
+        self,
+        messages: list[dict[str, Any]],
+        n_predict: int,
+        temperature: float | None = None,
+        schema: dict[str, Any] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> Completion:
+        """A whole exchange, with the tools the model may ask for.
+
+        What `chat` is built on. An agent loop needs the turns kept —
+        what it asked, what the tools answered — because a model told
+        only its own last sentence repeats it.
+        """
         payload: dict[str, Any] = {
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
             "max_tokens": n_predict,
             "temperature": (
                 self.temperature if temperature is None else temperature
@@ -164,10 +250,14 @@ class Backend:
                 "type": "json_schema",
                 "json_schema": {"name": "result", "schema": schema},
             }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
         answer = self._request("/v1/chat/completions", payload, self.timeout)
         try:
             choice = answer["choices"][0]
-            content = choice["message"]["content"] or ""
+            message = choice["message"]
+            content = message.get("content") or ""
         except (KeyError, IndexError) as error:
             raise BackendError(
                 f"shuttle-{self.role}: unexpected answer shape: "
@@ -179,6 +269,7 @@ class Backend:
             tokens_in=int(usage.get("prompt_tokens", 0)),
             tokens_out=int(usage.get("completion_tokens", 0)),
             truncated=choice.get("finish_reason") == "length",
+            calls=_calls(message.get("tool_calls") or []),
         )
 
     def slot_save(self, name: str) -> int:

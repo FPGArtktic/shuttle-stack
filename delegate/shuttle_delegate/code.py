@@ -72,7 +72,8 @@ CREATE TABLE IF NOT EXISTS sources (
     how        TEXT NOT NULL,
     units      INTEGER NOT NULL,
     lines      INTEGER NOT NULL,
-    indexed_at REAL NOT NULL
+    indexed_at REAL NOT NULL,
+    location   TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS units (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -256,11 +257,22 @@ def forget(db: sqlite3.Connection, file: str) -> int:
     return len(ids)
 
 
-def store(db: sqlite3.Connection, file: str, cut: Cut, lines: int) -> int:
+def store(
+    db: sqlite3.Connection,
+    file: str,
+    cut: Cut,
+    lines: int,
+    location: str = "",
+) -> int:
     """Embed the units and put them in, replacing an earlier pass.
 
     One transaction: a file half indexed would answer about the half
     that made it and say nothing about the rest.
+
+    The location is where the file was read from. A citation needs
+    only the name, but anything that wants to open the file again
+    needs the path, and storing the name alone meant the index knew
+    `counter_top.sv` was indexed and not where it is.
     """
     if not cut.units:
         raise IndexingError(f"{file}: no units to index")
@@ -299,8 +311,16 @@ def store(db: sqlite3.Connection, file: str, cut: Cut, lines: int) -> int:
         )
         db.execute(
             "INSERT INTO sources (path, language, how, units, lines,"
-            " indexed_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (file, cut.language, cut.how, len(cut.units), lines, time.time()),
+            " indexed_at, location) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                file,
+                cut.language,
+                cut.how,
+                len(cut.units),
+                lines,
+                time.time(),
+                location,
+            ),
         )
     return len(cut.units)
 
@@ -327,6 +347,21 @@ MAX_REFERENCES = 40
 # has to be present, so that a question about `counter` is not
 # answered about `counterweight`.
 SEPARATORS = (":", "::", ".")
+
+
+def located(db: sqlite3.Connection, name: str) -> Path | None:
+    """Where an indexed file was read from, if it is still there.
+
+    The index is the allowlist: a name it does not hold does not
+    resolve, so nothing can read a path nobody indexed.
+    """
+    row = db.execute(
+        "SELECT location FROM sources WHERE path = ?", (Path(name).name,)
+    ).fetchone()
+    if row is None or not row["location"]:
+        return None
+    where = Path(str(row["location"]))
+    return where if where.is_file() else None
 
 
 def references(
