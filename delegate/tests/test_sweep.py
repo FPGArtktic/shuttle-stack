@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from shuttle_delegate import code, indexing, sweep
+from shuttle_delegate import code, indexing, sweep, warm
 from shuttle_delegate.code import Cut, Unit
 from shuttle_delegate.sweep import Done, Report, Settings, SweepError
 
@@ -249,6 +249,60 @@ class ReportTest(unittest.TestCase):
         )
         body = sweep.write_report(report, lambda text: len(text)).read_text()
         self.assertLessEqual(len(body), sweep.REPORT_TOKENS + 80)
+
+
+class WarmTest(RunTest):
+    """The KV cache the night leaves behind, and the default not to."""
+
+    def indexed(self) -> Any:
+        return mock.patch.multiple(
+            indexing,
+            split=mock.DEFAULT,
+            connect=mock.DEFAULT,
+            store=mock.DEFAULT,
+        )
+
+    def swept(self, chosen: Settings, **held: Any) -> Any:
+        """One pass, with the indexing stubbed and warm.refresh too."""
+        with (
+            self.indexed() as patched,
+            mock.patch.object(warm, "refresh", **held) as called,
+        ):
+            patched["split"].return_value = ([mock.Mock()], "headings")
+            patched["store"].return_value = 3
+            return sweep.run(chosen), called
+
+    def test_nothing_is_cached_unless_the_operator_asks(self) -> None:
+        report, called = self.swept(self.chosen, return_value=[])
+        called.assert_not_called()
+        self.assertEqual(report.warmed, [])
+
+    def test_the_budget_reaches_the_refresh(self) -> None:
+        _, called = self.swept(
+            Settings(roots=(self.root,), warm=3), return_value=[]
+        )
+        self.assertEqual(called.call_args.kwargs["keep"], 3)
+
+    def test_what_was_indexed_tonight_counts_as_changed(self) -> None:
+        _, called = self.swept(
+            Settings(roots=(self.root,), warm=1), return_value=[]
+        )
+        self.assertIn(str(self.doc), called.call_args.kwargs["changed"])
+
+    def test_a_refresh_that_fails_does_not_fail_the_night(self) -> None:
+        report, _ = self.swept(
+            Settings(roots=(self.root,), warm=1),
+            side_effect=RuntimeError("server is down"),
+        )
+        self.assertEqual(len(report.indexed), 1)
+        self.assertIn("server is down", report.warmed[0].error)
+
+    def test_the_report_names_the_session_to_ask(self) -> None:
+        report = sweep.Report(started="now")
+        report.warmed = [warm.Warmed("/a/one.pdf", "s1", tokens=1404)]
+        body = "\n".join(sweep._lines(report))
+        self.assertIn("one.pdf", body)
+        self.assertIn("session_ask", body)
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@ from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import code, digest, indexing
+from . import code, digest, indexing, warm
 from .backend import Server
 from .config import config_home
 from .documents import SUFFIXES as DOCUMENT_SUFFIXES
@@ -69,6 +69,10 @@ class Settings:
     # and buys a readable line for every section, which is worth
     # having overnight and not worth waiting for by hand.
     digest: bool = True
+    # How many documents to leave in a server's KV cache. Off by
+    # default: a dump is 305 MiB whatever the document, so this
+    # spends somebody's disk and the operator says how much.
+    warm: int = 0
 
 
 @dataclass
@@ -97,6 +101,7 @@ class Report:
     indexed: list[Done] = field(default_factory=list)
     failed: list[Done] = field(default_factory=list)
     skipped: int = 0
+    warmed: list[warm.Warmed] = field(default_factory=list)
 
 
 def settings_path() -> Path:
@@ -132,6 +137,7 @@ def settings(file: Path | None = None) -> Settings:
         roots=tuple(found),
         heading=str(written.get("heading", indexing.HEADING)),
         digest=bool(written.get("digest", True)),
+        warm=max(0, int(written.get("warm", 0))),
     )
 
 
@@ -287,9 +293,27 @@ def run(chosen: Settings | None = None, force: bool = False) -> Report:
             report.indexed.append(done)
         else:
             report.failed.append(done)
+    if chosen.warm:
+        report.warmed = _warm(chosen, report)
     report.seconds = round(time.monotonic() - started, 1)
     save_state(state)
     return report
+
+
+def _warm(chosen: Settings, report: Report) -> list[warm.Warmed]:
+    """Leave the most-asked documents in a cache, or say why not.
+
+    Failing separately, like the digesting. A server that is down is
+    a reason for the morning to be slower, not a reason for the night
+    to have indexed nothing.
+    """
+    changed = frozenset(str(Path(one.path)) for one in report.indexed)
+    try:
+        from .server import backend
+
+        return warm.refresh(backend, keep=chosen.warm, changed=changed)
+    except Exception as error:  # noqa: BLE001 - a cache is not the index
+        return [warm.Warmed("", error=f"{type(error).__name__}: {error}")]
 
 
 def _lines(report: Report) -> list[str]:
@@ -319,6 +343,7 @@ def _lines(report: Report) -> list[str]:
         if len(report.indexed) > MAX_LISTED:
             out.append(f"- and {len(report.indexed) - MAX_LISTED} more")
         out.append("")
+    out += warm.lines(report.warmed)
     return out
 
 
