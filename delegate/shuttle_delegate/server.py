@@ -235,6 +235,7 @@ def ask_file(
     until: str = "",
     context: int = 12,
     words: int = 200,
+    attempts: int = 2,
     profile: str = "long",
 ) -> dict:
     return tasks.ask(
@@ -245,6 +246,7 @@ def ask_file(
         pattern,
         context,
         until,
+        attempts,
     )
 
 
@@ -271,7 +273,11 @@ def classify_file(
 @mcp.tool(
     description="Pull structured fields out of a file, following a JSON "
     "schema you supply; the server is held to the schema, so the shape "
-    "of the answer is guaranteed. Pass a `pattern` to read the fields "
+    "of the answer is guaranteed, though its content is not: a string "
+    "value the text does not contain was not read out of it, and such "
+    "an answer is drawn again, warmer, up to `attempts` times. What "
+    "still fails is listed in `values_not_in_source` rather than "
+    "passed off as read. Pass a `pattern` to read the fields "
     "from one region of a large file; without one the file must fit "
     "the context in a single piece, because fields cannot be merged "
     "across parts without inventing a precedence, and a file too "
@@ -286,6 +292,7 @@ def extract(
     pattern: str = "",
     until: str = "",
     context: int = 12,
+    attempts: int = 2,
     profile: str = "extract",
 ) -> dict:
     return tasks.extract(
@@ -296,6 +303,7 @@ def extract(
         pattern,
         context,
         until,
+        attempts,
     )
 
 

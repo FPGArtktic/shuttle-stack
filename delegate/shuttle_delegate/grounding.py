@@ -87,3 +87,27 @@ def check(answer: str, source: str) -> Grounding:
         total=len(found),
         missing=[span for span in found if flatten(span) not in flat],
     )
+
+
+# A value of a word or two is as likely to be a shared word as a
+# citation, and flagging it would say nothing either way.
+MIN_FIELD = 6
+
+
+def fields_in_source(fields: dict, source: str) -> list[str]:
+    """Extracted string values the source does not contain.
+
+    A number or a boolean is the model's reading of the text rather
+    than a span of it, so only strings long enough to be a quotation
+    are checked. The answer is a list of what was not found, named by
+    its field, which is what a caller needs to decide whether to
+    believe the rest.
+    """
+    flat = flatten(source)
+    missing = []
+    for key, value in fields.items():
+        if not isinstance(value, str) or len(value.strip()) < MIN_FIELD:
+            continue
+        if flatten(value) not in flat:
+            missing.append(f"{key}={value!r}")
+    return missing

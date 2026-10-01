@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .backend import Backend, Completion
 from .chunking import chunk
-from .grounding import check
+from .grounding import Grounding, check, fields_in_source
 from .retrieval import CONTEXT_LINES, narrow
 
 # Qwen3 averages above this on prose and near it on dense code, so the
@@ -27,6 +27,12 @@ MIN_BUDGET_TOKENS = 256
 FIT_ATTEMPTS = 3
 MAX_ROUNDS = 4
 LABEL_TOKENS = 64
+# A retry is only worth making if it can come out differently, so the
+# samples after the first are drawn warmer than the profile asks for.
+# The first attempt keeps the profile's own temperature, which for
+# schema-bound work is zero, so nothing is paid when it works.
+RETRY_TEMPERATURE = 0.7
+MAX_ATTEMPTS = 5
 MISSING = "NOT IN THIS TEXT"
 
 # llama-server reuses the KV cache of a prompt prefix it has already
@@ -192,6 +198,18 @@ def narrowed(
     return found, matched
 
 
+def temperatures(attempts: int) -> list[float | None]:
+    """The temperature of each attempt, first one as configured."""
+    if not 1 <= attempts <= MAX_ATTEMPTS:
+        raise TaskError(
+            f"attempts must be 1 to {MAX_ATTEMPTS}, got {attempts}"
+        )
+    later = [
+        min(1.2, RETRY_TEMPERATURE + 0.2 * k) for k in range(attempts - 1)
+    ]
+    return [None, *later]
+
+
 def _clause(prefix: str, value: str) -> str:
     return f" {prefix} {value.strip()}" if value.strip() else ""
 
@@ -258,6 +276,29 @@ def _answered(text: str) -> bool:
     return MISSING not in text.upper()
 
 
+def _parts(
+    backend: Backend,
+    work: Work,
+    chunks: list[str],
+    question: str,
+    words: str,
+    n_predict: int,
+    temperature: float | None,
+) -> list[str]:
+    """What each part of the text says, dropping the parts that refuse."""
+    said = [
+        work.record(
+            backend.chat(
+                ASK_ONE.format(question=question, words=words, text=piece),
+                n_predict,
+                temperature=temperature,
+            )
+        )
+        for piece in chunks
+    ]
+    return [answer for answer in said if _answered(answer)]
+
+
 def _join(
     backend: Backend,
     work: Work,
@@ -265,6 +306,7 @@ def _join(
     question: str,
     words: str,
     n_predict: int,
+    temperature: float | None = None,
 ) -> str:
     """Fold several part-answers into one, in bounded rounds."""
     pieces = answers
@@ -278,6 +320,7 @@ def _join(
                         question=question, words=words, text=piece
                     ),
                     n_predict,
+                    temperature=temperature,
                 )
             )
             for piece in cut
@@ -300,6 +343,7 @@ def ask(
     pattern: str = "",
     context: int = CONTEXT_LINES,
     until: str = "",
+    attempts: int = 2,
 ) -> dict:
     """Answer a question from a file, part by part if it is long.
 
@@ -320,22 +364,33 @@ def ask(
     chunks = fit(backend, text, n_predict)
     if not chunks:
         raise TaskError("nothing to read")
-    answers = [
-        answer
-        for answer in (
-            work.record(
-                backend.chat(
-                    ASK_ONE.format(question=question, words=limit, text=piece),
-                    n_predict,
-                )
-            )
-            for piece in chunks
+    # The model saw `text` and nothing else, so that is what a
+    # quotation in its answer has to have come from. An answer quoting
+    # something that is not there is drawn again, warmer, because the
+    # citation is what makes the answer checkable at all. A refusal is
+    # never resampled: drawing again until something comes back would
+    # reward the model for inventing one.
+    answers: list[str] = []
+    answer = ""
+    grounded = Grounding()
+    tried = 0
+    for temperature in temperatures(attempts):
+        tried += 1
+        answers = _parts(
+            backend, work, chunks, question, limit, n_predict, temperature
         )
-        if _answered(answer)
-    ]
+        if not answers:
+            break
+        answer = _join(
+            backend, work, answers, question, limit, n_predict, temperature
+        )
+        grounded = check(answer, text)
+        if grounded.ok:
+            break
     report = {
         "parts": len(chunks),
         "parts_answering": len(answers),
+        "attempts": tried,
         "server": f"shuttle-{backend.role}",
     } | work.report()
     if pattern:
@@ -344,15 +399,13 @@ def ask(
         return {
             "answer": "",
             "found": False,
+            "verified": True,
             "note": "no part of the file answers this question",
         } | report
-    answer = _join(backend, work, answers, question, limit, n_predict)
-    # The model saw `text` and nothing else, so that is what a
-    # quotation in its answer has to have come from.
     result = (
-        {"answer": answer, "found": True}
-        | (report | work.report())
-        | check(answer, text).report()
+        {"answer": answer, "found": True, "verified": grounded.ok}
+        | report
+        | grounded.report()
     )
     if len(answers) > 1:
         # A part that holds nothing may answer anyway rather than use
@@ -473,12 +526,20 @@ def extract(
     pattern: str = "",
     context: int = CONTEXT_LINES,
     until: str = "",
+    attempts: int = 2,
 ) -> dict:
     """Pull structured fields out of a text that fits in one go.
 
     A pattern narrows the file first, which is what makes this usable
     on a file larger than the context: the fields are read from the
     matching regions rather than from a refusal.
+
+    The server holds the answer to the schema, so its shape is never
+    wrong; its content can be. A string value the text does not
+    contain was not read out of it, and that is the verifier here. An
+    answer that fails it is drawn again, warmer, up to `attempts`
+    times. The first attempt uses the profile's own temperature, so
+    nothing is paid when it passes, which is the usual case.
     """
     if schema.get("type") != "object":
         raise TaskError("schema must be a JSON schema of type 'object'")
@@ -494,20 +555,32 @@ def extract(
             "without inventing precedence; summarise it first, or pass a "
             "smaller file"
         )
-    work = Work()
-    answer = work.record(
-        backend.chat(
-            EXTRACT.format(
-                instructions=_clause("", instructions), text=chunks[0]
-            ),
-            n_predict,
-            schema=schema,
-        )
+    prompt = EXTRACT.format(
+        instructions=_clause("", instructions), text=chunks[0]
     )
+    work = Work()
+    fields: dict = {}
+    missing: list[str] = []
+    tried = 0
+    for temperature in temperatures(attempts):
+        tried += 1
+        answer = work.record(
+            backend.chat(
+                prompt, n_predict, temperature=temperature, schema=schema
+            )
+        )
+        fields = _decode(answer, "the fields")
+        missing = fields_in_source(fields, chunks[0])
+        if not missing:
+            break
     result = {
-        "fields": _decode(answer, "the fields"),
+        "fields": fields,
+        "attempts": tried,
+        "verified": not missing,
         "server": f"shuttle-{backend.role}",
     } | work.report()
+    if missing:
+        result["values_not_in_source"] = missing
     if pattern:
         result["matched_regions"] = matched
     return result

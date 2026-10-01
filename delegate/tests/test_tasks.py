@@ -17,6 +17,7 @@ from shuttle_delegate.tasks import (
     extract,
     read_text,
     summarise,
+    temperatures,
 )
 
 SCHEMA = {"type": "object", "properties": {"a": {"type": "string"}}}
@@ -32,6 +33,7 @@ class FakeBackend:
         self._answers = answers
         self.prompts: list[str] = []
         self.schemas: list[dict | None] = []
+        self.temperatures: list[float | None] = []
 
     def context_size(self) -> int:
         return self._n_ctx
@@ -43,11 +45,12 @@ class FakeBackend:
         self,
         prompt: str,
         n_predict: int,
-        temperature: float = 0.2,
+        temperature: float | None = None,
         schema: dict | None = None,
     ) -> Completion:
         self.prompts.append(prompt)
         self.schemas.append(schema)
+        self.temperatures.append(temperature)
         answer = self._answers
         if callable(answer):
             answer = answer(len(self.prompts), prompt)
@@ -260,3 +263,70 @@ class BrainstormTest(unittest.TestCase):
         backend = FakeBackend(answers=json.dumps({"ideas": []}))
         with self.assertRaises(TaskError):
             brainstorm(backend, "", self.REQUEST)
+
+
+class AttemptsTest(unittest.TestCase):
+    """A sample that fails its verifier is drawn again, warmer."""
+
+    SOURCE = "The gateway is 10.89.7.1 and the subnet is 10.89.7.0/24.\n"
+    SCHEMA = {
+        "type": "object",
+        "properties": {"gateway": {"type": "string"}},
+        "required": ["gateway"],
+    }
+
+    def test_the_first_attempt_keeps_the_profile_temperature(self) -> None:
+        self.assertEqual(temperatures(1), [None])
+        self.assertIsNone(temperatures(3)[0])
+
+    def test_later_attempts_are_warmer_and_rise(self) -> None:
+        warm = temperatures(4)[1:]
+        self.assertEqual(warm, sorted(warm))
+        self.assertTrue(all(t and t > 0.5 for t in warm))
+
+    def test_an_absurd_number_of_attempts_is_refused(self) -> None:
+        with self.assertRaises(TaskError):
+            temperatures(99)
+
+    def test_a_value_in_the_source_passes_on_the_first_try(self) -> None:
+        backend = FakeBackend(answers=json.dumps({"gateway": "10.89.7.1"}))
+        result = extract(backend, self.SOURCE, self.SCHEMA)
+        self.assertEqual(result["attempts"], 1)
+        self.assertTrue(result["verified"])
+        self.assertIsNone(backend.temperatures[0])
+
+    def test_an_invented_value_is_drawn_again(self) -> None:
+        def answer(n: int, _: str) -> str:
+            value = "192.168.0.1" if n == 1 else "10.89.7.1"
+            return json.dumps({"gateway": value})
+
+        backend = FakeBackend(answers=answer)
+        result = extract(backend, self.SOURCE, self.SCHEMA, attempts=3)
+        self.assertEqual(result["attempts"], 2)
+        self.assertTrue(result["verified"])
+        self.assertIsNotNone(backend.temperatures[1])
+
+    def test_a_value_never_found_is_reported_not_hidden(self) -> None:
+        backend = FakeBackend(answers=json.dumps({"gateway": "192.168.0.1"}))
+        result = extract(backend, self.SOURCE, self.SCHEMA, attempts=2)
+        self.assertEqual(result["attempts"], 2)
+        self.assertFalse(result["verified"])
+        self.assertIn("gateway", result["values_not_in_source"][0])
+
+    def test_a_refusal_is_never_drawn_again(self) -> None:
+        backend = FakeBackend(answers="NOT IN THIS TEXT")
+        result = ask(backend, self.SOURCE, "the phone number?", attempts=3)
+        self.assertFalse(result["found"])
+        self.assertEqual(result["attempts"], 1)
+        self.assertTrue(result["verified"])
+
+    def test_an_answer_quoting_what_is_absent_is_drawn_again(self) -> None:
+        def answer(n: int, _: str) -> str:
+            if n == 1:
+                return 'it is "a sentence nobody ever wrote here"'
+            return 'it is "The gateway is 10.89.7.1"'
+
+        backend = FakeBackend(answers=answer)
+        result = ask(backend, self.SOURCE, "the gateway?", attempts=3)
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["attempts"], 2)
