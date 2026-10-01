@@ -29,7 +29,14 @@ readonly KV_BYTES_PER_TOKEN_LAYER=2048
 readonly HEALTH_TIMEOUT=900
 readonly BENCH_PREDICT=64
 readonly PHASES=(detect plan host gpu quadlets models verify bench docs
-	delegate sweep status)
+	delegate sweep audit status)
+# Two probes, because one of them proves less than it looks.  A name
+# that does not resolve is the answer a broken resolver gives on a
+# network that routes perfectly well, so the second probe is a bare
+# address and asks about the route itself.  Neither is pinged to see
+# whether it is up: the audit's claim is that the container cannot
+# leave, and a reply from either would refute it.
+readonly EGRESS_PROBES=(https://huggingface.co https://1.1.1.1)
 readonly EXEC_COMMON="--slot-save-path /cache --flash-attn on --no-webui"
 
 declare -rA SERVER_IP=([long]=10.89.7.10 [fast]=10.89.7.11)
@@ -56,6 +63,7 @@ declare -rA DISTRO=(
 )
 
 phases=()
+audit_failed=0
 dry_run=0
 assume_yes=0
 use_gpu=1
@@ -140,7 +148,7 @@ usage: install.sh [phase...] [options]
 
 Phases always run in this order; without any, all but bench run:
   detect plan host gpu quadlets models verify bench docs delegate sweep
-  status
+  audit status
 
 Options:
   --dry-run                  show commands and file changes, change nothing
@@ -329,7 +337,7 @@ parse_args()
 	while (( $# )); do
 		case $1 in
 		detect|plan|host|gpu|quadlets|models|verify|bench|docs|\
-		delegate|sweep|status)
+		delegate|sweep|audit|status)
 			phases+=("$1") ;;
 		--dry-run)		dry_run=1 ;;
 		--yes)			assume_yes=1 ;;
@@ -1720,6 +1728,103 @@ phase_sweep()
 	fi
 	run systemctl --user enable --now shuttle-sweep.timer
 	info "sweeping nightly at $SWEEP_AT; report in .shuttle/report.md"
+}
+
+audit_row()
+{
+	local what=$1 verdict=$2 detail=$3
+
+	printf 'audit\t%s\t%s\t%s\n' "$what" "$verdict" "$detail"
+	[[ $verdict == ok ]] || audit_failed=1
+}
+
+# Internal=true is the claim; this is the reading of it from podman
+# rather than from the unit file that asked for it.
+audit_internal()
+{
+	local internal
+
+	internal=$(podman network inspect "$NETWORK" \
+		--format '{{.Internal}}' 2> /dev/null) || internal=absent
+	if [[ $internal == true ]]; then
+		audit_row network ok "$NETWORK has Internal=true"
+	else
+		audit_row network FAIL "$NETWORK Internal=$internal"
+	fi
+}
+
+# The one that matters: a container on the network tries to leave it.
+# Success here is a failed request.
+audit_egress()
+{
+	local probe out what
+
+	for probe in "${EGRESS_PROBES[@]}"; do
+		what=egress-${probe##*/}
+		if out=$(podman run --rm --network "$NETWORK" "$IMAGE_CURL" \
+				-sS --max-time 10 -k -o /dev/null \
+				"$probe" 2>&1); then
+			audit_row "$what" FAIL "reached $probe from $NETWORK"
+		else
+			audit_row "$what" ok "${out#curl: }"
+		fi
+	done
+}
+
+# A published port on 0.0.0.0 is reachable from the LAN, which is a
+# different thing from reachable from this host.
+audit_ports()
+{
+	local role name bindings
+
+	for role in long fast; do
+		name=shuttle-$role
+		bindings=$(podman inspect "$name" \
+			--format '{{range $p, $c := .NetworkSettings.Ports}}{{range $c}}{{.HostIP}}:{{.HostPort}} {{end}}{{end}}' \
+			2> /dev/null) || bindings=""
+		bindings=${bindings% }
+		if [[ -z $bindings ]]; then
+			audit_row "$name" ok "no published port"
+		elif [[ $bindings =~ ^(127\.0\.0\.1:[0-9]+ ?)+$ ]]; then
+			audit_row "$name" ok "$bindings, loopback only"
+		else
+			audit_row "$name" FAIL "$bindings"
+		fi
+	done
+}
+
+# Anything else on the network would share a subnet with the servers
+# and reach them without going through the delegate.
+audit_members()
+{
+	local others
+
+	others=$(podman ps --filter "network=$NETWORK" \
+		--format '{{.Names}}' 2> /dev/null |
+		grep -v '^shuttle-' | tr '\n' ' ') || others=""
+	others=${others% }
+	if [[ -z $others ]]; then
+		audit_row members ok "only shuttle- containers on $NETWORK"
+	else
+		audit_row members FAIL "also on $NETWORK: $others"
+	fi
+}
+
+# The audit reads; it changes nothing and needs no root, so it runs
+# under --dry-run as the status phase does.
+phase_audit()
+{
+	require_supported
+	{
+		audit_internal
+		audit_egress
+		audit_ports
+		audit_members
+	} | table 7 22 6
+	(( audit_failed == 0 )) ||
+		die "the network audit found something reachable that should" \
+			"not be; see the FAIL rows above"
+	info "no egress from $NETWORK, and nothing published beyond loopback"
 }
 
 # uv builds an isolated environment and puts the launcher on PATH, so

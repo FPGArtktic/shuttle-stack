@@ -19,6 +19,7 @@ dev = ["mypy>=1.18"]
 [project.scripts]
 shuttle-delegate = "shuttle_delegate.__main__:main"
 shuttle-sweep = "shuttle_delegate.sweep:main"
+shuttle-backup = "shuttle_delegate.backup:main"
 
 [build-system]
 requires = ["hatchling"]
