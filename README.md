@@ -39,7 +39,7 @@ and M2 the evaluation that says how far either can be trusted.
 | Best-of-n | working — a sample failing its verifier is drawn again, warmer; 1.00 attempts per case over the evaluation set |
 | Document index | working — one SQLite file, BM25 and vectors fused, sections cited by file, page and clause, answers under 300 tokens |
 | Source index | working — Tree-sitter units for fourteen languages, cited by file and line range; falls back to blank-line blocks and says why |
-| Bounded agents | working — six presets, `agent_start` runs one until a verifier agrees or a budget is spent; a preset with no verifier is refused; `doc-extract` scores 78% against M5's reference set |
+| Bounded agents | working — six presets, `agent_start` runs one until a verifier agrees or a budget is spent; a preset with no verifier is refused; `doc-extract` scores 27/27 against M5's reference set |
 | Code graph | working — includes, calls, instantiation, inherit, DEPENDS and every variable assignment, read off the parse; `find_references` answers with file:line and no model, `expand_symbol` one hop further |
 | Network audit | working — `install.sh audit` proves no egress with two probes, and checks what each server publishes and where |
 | Audit log rotation | working — eight megabytes a generation, four kept, rotated before the write |
@@ -308,7 +308,7 @@ and the instructions repeat it.
 | `extract` | path, JSON schema, instructions, pattern, until, context, attempts, cascade_profiles, profile | the fields, in the shape asked for |
 | `brainstorm` | a request, optionally a path | several options, marked unverified |
 | `index_path` | path, heading | for a document, how many sections and whether by heading or page; for source, the language, the units and how they were cut |
-| `search_docs` | a question, limit, file | a few sections with file, page and heading, under 300 tokens; a file keeps the search inside that document |
+| `search_docs` | a question, limit, file | a few sections with file, page and heading, under 300 tokens; a file keeps the search inside that document and adds what sections it has |
 | `search_code` | a question, limit | a few units with file and line range, under 300 tokens |
 | `find_references` | a name, a relation, limit | every file:line that names it, with no model asked |
 | `expand_symbol` | a name, hops, limit | where it is defined with the head of the definition, who names it, and what those places reach, each as file:line |
@@ -1317,15 +1317,14 @@ alongside from M2. M8 is independent of all of it.
   the servers through those same loopback ports from the host, so closing
   them would cut it off; the token assumes an HTTP delegate where this one
   speaks stdio, on which a bearer token means nothing.
-- **M5 — code graphs and constrained agents.** The graph, the two-hop
+- **M5 — code graphs and constrained agents.** Done: the graph, the two-hop
   expansion, the scout, the bounded loop and all six presets the design
-  names are in. Two of the three criteria are met: `repo-scout` answers both
-  of its questions with the right file and line, and `verify-loop` converges
-  on five of five seeded defects. The third is measured and **not** met —
-  `doc-extract` reaches 21 of 27 fields, 78 %, over five real reports whose
-  expected values were parsed from their own tables, against the 90 % asked
-  for. The one document it fails is diagnosed above; the fix is in what the
-  loop sends as its query, not in the index or the model.
+  names. All three criteria are met on this machine — `repo-scout` answers
+  both of its questions with the right file and line, `verify-loop`
+  converges on five of five seeded defects against the three asked for, and
+  `doc-extract` reaches 27 of 27 fields over five real reports whose
+  expected values were parsed from their own tables, against the 90 %
+  asked for.
 - **M6 — batch work.** Partly done: the timer, the watched directories, the
   overnight indexing of both documents and source, a morning report short
   enough to read in a thousand tokens, and the answer cache — narrower than
@@ -1454,31 +1453,38 @@ Twenty-seven fields in all, scored the way grounding compares, with space
 removed and case dropped:
 
 ```
-counter.flow.rpt  6/6  verified  3 steps  22s
-counter.map.rpt   6/6  verified  3 steps  21s
-counter.fit.rpt   6/6  verified  3 steps  23s
-counter.sta.rpt   3/3  verified  3 steps  20s
-top.flow.rpt      0/6  refused   8 steps  51s
+counter.flow.rpt  6/6  verified  3 steps  18s
+counter.map.rpt   6/6  verified  3 steps  18s
+counter.fit.rpt   6/6  verified  3 steps  20s
+counter.sta.rpt   3/3  verified  3 steps  17s
+top.flow.rpt      6/6  verified  3 steps  19s
 
-21 of 27 = 78 %, so the criterion is not met
+27 of 27 = 100 %, and three runs agree
 ```
 
-Four documents exactly, every value as the report writes it, including a
-`Fitter Status` of `Successful - Sat Aug 22 17:58:59 2026` copied whole. The
-fifth fails for a reason worth naming: the loop sends the whole request as
-its search query, and `From top.flow.rpt pull these fields exactly as the
-report writes them: Revision Name, …` ranks `Flow OS Summary` above `Flow
-Summary`. Asked with the field names alone the right section is first, at
-0.0328 against 0.0141 — so the index is not the problem and neither is the
-model's reading. It is what gets asked.
+Every value as the report writes it, including a `Fitter Status` of
+`Successful - Sat Aug 22 17:58:59 2026` copied whole.
 
-It is also the better failure of the two available. Before a search could be
-narrowed to a document, the same case returned `counter`'s revision, entity
-and device with grounding's approval; now it returns nothing and says so.
+**Two of those fields were 21 of 27 an hour earlier, and what changed is
+worth more than the number.** `top.flow.rpt` failed because the loop sends
+its whole request as the search query, and `From top.flow.rpt pull these
+fields exactly as the report writes them: Revision Name, …` ranks `Flow OS
+Summary` above `Flow Summary`; asked with the field names alone the right
+section is first, 0.0328 against 0.0141. So neither the index nor the
+model's reading was at fault — what got asked was.
+
+The listing that fixes it was already reachable: `read_section` with a file
+and nothing else answers with the document's sections, and the preset's task
+said to start there. The model called `search_docs` instead, three times
+over. Removing `search_docs` to force the other path took the score from 21
+of 27 to **0 of 27**, because the model then asked `read_section` for a
+section called `fields`. Putting the same listing into the search reply —
+the call it always makes first — took it to 27 of 27.
 
 Asked to extract fields that live in two different sections of one document,
-it returns the ones in the section it opened — three of six over three runs,
-each value right. **Sound rather than complete, in both directions.**
+it still returns the ones in the section it opened: three of six over three
+runs, each value right. **Sound rather than complete where the fields are
+scattered, exact where they are together.**
 
 Two things it is worth knowing before trusting a shape. A field asked to
 hold something and holding nothing used to verify: an empty object satisfies
