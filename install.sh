@@ -889,9 +889,18 @@ plan_draft()
 	if [[ -n $types ]]; then
 		server_env[long]+="LLAMA_ARG_SPEC_TYPE=$types"$'\n'
 	fi
-	plan_row long.spec "${types:-off}" \
-		"a spec type is required, as a draft model alone leaves" \
-		"speculative decoding off"
+	if (( use_draft )); then
+		plan_row long.spec "$types" \
+			"a spec type is required, as a draft model alone" \
+			"leaves speculative decoding off"
+	elif (( use_ngram )); then
+		plan_row long.spec "$types" \
+			"an n-gram lookup over the prompt, which needs no" \
+			"model and no VRAM"
+	else
+		plan_row long.spec off "--no-draft and no --ngram: nothing" \
+			"to speculate with"
+	fi
 	if (( ! use_draft )); then
 		plan_row long.draft off "--no-draft"
 		return 0
@@ -1004,30 +1013,49 @@ missing_packages()
 	done
 }
 
-host_packages()
+install_packages()
 {
-	local -a refresh install packages gpu missing
-	local repo=${DISTRO[$distro.gpu_repo]}
+	local -a refresh install
 
-	read -ra packages <<< "${DISTRO[$distro.packages]}"
-	if (( gpu_used )); then
-		read -ra gpu <<< "${DISTRO[$distro.gpu_packages]}"
-		packages+=("${gpu[@]}")
-	fi
-	mapfile -t missing < <(missing_packages "${packages[@]}")
-	if (( ${#missing[@]} == 0 )); then
-		info "packages: ${#packages[@]} present"
-		return 0
-	fi
-	if (( gpu_used )) && [[ -n $repo ]]; then
-		"$repo"
-	fi
 	read -ra refresh <<< "${DISTRO[$distro.refresh]}"
 	read -ra install <<< "${DISTRO[$distro.install]}"
 	if (( ${#refresh[@]} )); then
 		root "${refresh[@]}"
 	fi
-	root "${install[@]}" "${missing[@]}"
+	root "${install[@]}" "$@"
+}
+
+# The base packages go in first, because the repository the GPU
+# packages come from is fetched with curl and curl is one of them: a
+# minimal Ubuntu host died inside the phase that was to install it.
+# The repository is added only when a GPU package is actually wanted,
+# rather than whenever anything at all is missing, since it is a
+# third-party apt source written as root.
+host_packages()
+{
+	local -a base gpu missing_base missing_gpu
+	local repo=${DISTRO[$distro.gpu_repo]}
+
+	read -ra base <<< "${DISTRO[$distro.packages]}"
+	mapfile -t missing_base < <(missing_packages "${base[@]}")
+	if (( gpu_used )); then
+		read -ra gpu <<< "${DISTRO[$distro.gpu_packages]}"
+		mapfile -t missing_gpu < <(missing_packages "${gpu[@]}")
+	fi
+	if (( ${#missing_base[@]} == 0 && ${#missing_gpu[@]} == 0 )); then
+		info "packages: ${#base[@]} present"
+		return 0
+	fi
+	if (( ${#missing_base[@]} )); then
+		install_packages "${missing_base[@]}"
+	fi
+	if (( ${#missing_gpu[@]} == 0 )); then
+		return 0
+	fi
+	if [[ -n $repo ]]; then
+		"$repo"
+	fi
+	install_packages "${missing_gpu[@]}"
 }
 
 # The fixed range must not overlap another user's, or two users would
@@ -1492,18 +1520,31 @@ slot_action()
 	api long "/slots/0?action=$1" --json @- <<< '{"filename": "smoke.bin"}'
 }
 
+# A row saying "ok" has to mean something happened.  Under --dry-run
+# nothing did, and a count the server did not report is not evidence
+# that a token moved, which is the swallow check_env_names exists to
+# prevent four hundred lines above.
 kv_roundtrip()
 {
 	local file=$cache_dir/long/smoke.bin out saved restored
 
+	if (( dry_run )); then
+		printf 'kv save/restore\tshuttle-long\tnot run\t%s\t\n' \
+			"dry run"
+		return 0
+	fi
 	out=$(slot_action save) || die "shuttle-long: slot save failed"
 	saved=$(jq -r '.n_saved // empty' <<< "$out")
 	run test -f "$file" || die "slot save did not create $file"
 	out=$(slot_action restore) || die "shuttle-long: slot restore failed"
 	restored=$(jq -r '.n_restored // empty' <<< "$out")
 	run rm -f "$file"
+	[[ -n $saved && -n $restored ]] ||
+		die "shuttle-long: the slot round trip reported no token" \
+			"count (n_saved='$saved', n_restored='$restored');" \
+			"the image may have renamed the field"
 	printf 'kv save/restore\tshuttle-long\tok\t%s saved\t%s restored\n' \
-		"${saved:--}" "${restored:--}"
+		"$saved" "$restored"
 }
 
 phase_verify()
