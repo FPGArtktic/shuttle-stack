@@ -19,7 +19,7 @@ jobs:
   smoke:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install shellcheck and uv
         run: |
           command -v shellcheck || sudo apt-get install -y shellcheck
@@ -41,7 +41,7 @@ jobs:
       matrix:
         python: ['3.11', '3.12', '3.13']
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install uv
         run: |
           command -v uvx || curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -59,7 +59,7 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
