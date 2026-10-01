@@ -34,6 +34,7 @@ and M2 the evaluation that says how far either can be trusted.
 | `classify_file` | working — labels enforced by a schema, votes across parts, reports agreement |
 | `extract` | working — fields enforced by a schema, narrows by regexp; refuses a file that needs more than one part |
 | `brainstorm` | working — several options, shape fixed by a schema, content explicitly unverified |
+| Sessions | working — a document read once and asked repeatedly; the transcript is the record, the KV dump only a cache |
 | `start_job` / `get_status` / `get_result` | working — a file tool run in the background, polled and collected |
 | Evaluation set | working — twenty cases with known answers, two of them refusals; 20/20 on the long server, 18/20 on the fast one |
 | Profiles | working — `long`, `fast`, `extract`; endpoint, sampling and report limit, overridable in `profiles.toml` |
@@ -281,6 +282,9 @@ and the instructions repeat it.
 | `classify_file` | path, labels, question, profile | one of the labels, the vote and the agreement |
 | `extract` | path, JSON schema, instructions, pattern, until, context, profile | the fields, in the shape asked for |
 | `brainstorm` | a request, optionally a path | several options, marked unverified |
+| `session_open` | path, words, pattern, until, context, profile | a session id, the document read and cached |
+| `session_ask` | a session id and a question | the answer, with the cache restored rather than the document resent |
+| `session_close` | a session id | the cache dropped, the transcript kept |
 | `start_job` | a tool name and its arguments | a job id, at once |
 | `get_status` | a job id | queued, running, done or failed, with the time |
 | `get_result` | a job id | the finished answer, as the tool would have returned it |
@@ -326,6 +330,44 @@ visible. The newest sixty-four settled jobs are kept and the rest forgotten.
 Everything a job does is recorded exactly as a direct call is: the same
 report limit, the same run file, the same line in the audit log. The two
 paths differ in who waits and in nothing else.
+
+### Sessions, for a document you will ask more than once
+
+Each of the file tools reads its file from scratch. Asking the same document
+five questions reads it five times, and on this machine reading 1404 tokens
+costs two and a half seconds before any thinking starts.
+
+`session_open` reads it once and keeps its KV cache under a name.
+`session_ask` restores that cache instead of sending the document again.
+`session_close` drops the cache and keeps the record. Measured on
+`CONTRIBUTING.md`:
+
+```
+session_open     2.4s  1404 tokens read and cached
+session_ask      3.2s  1404 restored
+session_ask      2.8s  1404 restored
+session_ask      1.7s  1404 restored
+```
+
+**The transcript is the source of truth and the dump is only a cache.** Every
+exchange is appended to `.shuttle/sessions/<id>.jsonl`, and if the dump is
+gone the document is simply read again: the answers are the same, only
+slower.
+
+If the file has changed since the session opened, the dump is thrown away
+rather than trusted, the answer comes from the new text, and the reply says
+so in `source_changed`. A cached answer about an older version of a file is
+worse than a slow answer about the current one. The cache is rebuilt once the
+new text has been read, so only the first question after a change pays for
+it.
+
+A document the server cannot hold is refused when the session opens, with
+both numbers and the three ways out, rather than reaching you as the HTTP 400
+llama-server answers an oversized prompt with. A session is opened once and
+asked many times, so that is where the check belongs.
+
+The dump is 305 MiB. A session left open is disk spent on a document nobody
+is asking about, which is what `session_close` is for.
 
 ### Profiles
 
