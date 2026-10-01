@@ -10,6 +10,7 @@ dependencies = ["mcp>=2.2"]
 
 [project.scripts]
 shuttle-delegate = "shuttle_delegate.__main__:main"
+shuttle-sweep = "shuttle_delegate.sweep:main"
 
 [build-system]
 requires = ["hatchling"]
