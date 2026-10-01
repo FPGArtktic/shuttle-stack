@@ -528,11 +528,46 @@ def tail(text: str) -> str:
     return parts[-1] if parts else ""
 
 
+# Stands in for an expansion cut out of a value. Any word it touches
+# was partly computed by bitbake and is not a recipe name.
+HOLE = "\x00"
+
+
+def unexpanded(value: str) -> str:
+    """The value with every ${...} replaced, nesting and all.
+
+    Skipping a word that holds a `${` is not enough, because an
+    expansion can hold whitespace. Measured over
+    meta-virtualization: `${@bb.utils.contains('XEN_TARGET_ARCH',
+    'x86_64', 'dev86-native', '', d)}` is five words, only the first
+    of which holds the `${`, so `'x86_64',` and `'dev86-native',`
+    both entered the graph as recipes nothing depends on.
+    """
+    out = []
+    depth = 0
+    at = 0
+    while at < len(value):
+        if value.startswith("${", at):
+            depth += 1
+            at += 2
+            continue
+        if depth and value[at] == "}":
+            depth -= 1
+            at += 1
+            if not depth:
+                out.append(HOLE)
+            continue
+        if not depth:
+            out.append(value[at])
+        at += 1
+    return "".join(out)
+
+
 def listed(value: str) -> list[str]:
     """The recipe names inside a bitbake list, variables left alone."""
     out = []
-    for word in bare(value).split():
-        if "${" in word or not word:
+    for word in unexpanded(bare(value)).split():
+        if HOLE in word or not word.strip("\\"):
             continue
         out.append(word)
     return out
