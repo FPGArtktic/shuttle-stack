@@ -14,6 +14,9 @@ from shuttle_delegate.tasks import TaskError
 
 JOBLESS = {
     "status",
+    "index_document",
+    "search_docs",
+    "list_indexed_docs",
     "start_job",
     "get_status",
     "get_result",
@@ -24,6 +27,9 @@ JOBLESS = {
 
 EXPECTED = {
     "status",
+    "index_document",
+    "search_docs",
+    "list_indexed_docs",
     "session_open",
     "session_ask",
     "session_close",

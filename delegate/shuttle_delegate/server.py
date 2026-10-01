@@ -6,16 +6,18 @@ from __future__ import annotations
 import functools
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from . import audit, cascade, profiles, runs, sessions, tasks
+from . import audit, cascade, indexing, profiles, runs, sessions, tasks
 from .backend import Backend, BackendError
 from .cascade import CascadeError
 from .config import ConfigError, load_endpoints
 from .documents import DocumentError
+from .indexing import IndexingError
 from .jobs import JobError, Queue
 from .profiles import ProfileError
 from .retrieval import PatternError
@@ -34,6 +36,7 @@ DEFAULT_PROFILE = "long"
 # dressed as a failure it could do something about.
 EXPECTED = (
     TaskError,
+    IndexingError,
     DocumentError,
     CascadeError,
     SessionError,
@@ -470,3 +473,62 @@ def session_ask(session: str, question: str) -> dict:
 @anticipated
 def session_close(session: str) -> dict:
     return sessions.close(backend, session)
+
+
+@mcp.tool(
+    description="Read a document and put its sections into the vector "
+    "index, so later questions can find the right part of it without "
+    "anyone naming a pattern. Sections are found by heading — a "
+    "numbered clause or a Markdown heading — and by page where a "
+    "document has no headings; the reply says which happened. "
+    "Indexing the same file again replaces its sections rather than "
+    "doubling them. Only the collection named is touched."
+)
+@anticipated
+def index_document(
+    path: str,
+    collection: str = indexing.COLLECTION,
+    heading: str = indexing.HEADING,
+) -> dict:
+    text = tasks.read_text(path)
+    sections, how = indexing.split(text, heading)
+    made = indexing.ensure(collection)
+    name = Path(path).name
+    stored = indexing.store(collection, name, sections)
+    return {
+        "file": name,
+        "collection": collection,
+        "collection_created": made,
+        "sections": stored,
+        "sections_from": how,
+        "pages": max((s.page for s in sections), default=0),
+    }
+
+
+@mcp.tool(
+    description="Search the indexed documents by meaning and get back "
+    "a few sections with the file, the page and the heading each came "
+    "from. This is the tool for a question you cannot turn into a "
+    "pattern, and the citation is the point: an answer that names its "
+    "page can be checked, and one that does not cannot."
+)
+@anticipated
+def search_docs(
+    question: str,
+    collection: str = indexing.COLLECTION,
+    limit: int = 3,
+    profile: str = DEFAULT_PROFILE,
+) -> dict:
+    return indexing.search(
+        question, collection, limit, backend(profile).count_tokens
+    )
+
+
+@mcp.tool(
+    description="List the documents in a collection, with how many "
+    "sections and pages each contributed. Call it to find out whether "
+    "something is worth indexing again, or at all."
+)
+@anticipated
+def list_indexed_docs(collection: str = indexing.COLLECTION) -> dict:
+    return indexing.indexed(collection)
