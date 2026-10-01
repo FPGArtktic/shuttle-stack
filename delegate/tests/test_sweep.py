@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from shuttle_delegate import indexing, sweep
+from shuttle_delegate import code, indexing, sweep
+from shuttle_delegate.code import Cut, Unit
 from shuttle_delegate.sweep import Done, Report, Settings, SweepError
 
 
@@ -99,6 +100,39 @@ class RunTest(unittest.TestCase):
             mock.patch.object(indexing, "connect"),
             mock.patch.object(indexing, "store", return_value=sections),
         )
+
+    def test_source_is_swept_as_well_as_prose(self) -> None:
+        (self.root / "top.sv").write_text("module top; endmodule\n")
+        found = [p.name for p in sweep.documents((self.root,))]
+        self.assertEqual(sorted(found), ["a.md", "top.sv"])
+
+    def test_a_build_directory_is_not_swept(self) -> None:
+        for where in ("db", "output_files", ".git"):
+            made = self.root / where
+            made.mkdir()
+            (made / "generated.sv").write_text("module g; endmodule\n")
+        found = [p.name for p in sweep.documents((self.root,))]
+        self.assertEqual(found, ["a.md"])
+
+    def test_source_goes_to_the_source_shelf(self) -> None:
+        source = self.root / "top.sv"
+        source.write_text("module top; endmodule\n")
+        cut = Cut(
+            "top.sv",
+            "systemverilog",
+            "tree-sitter",
+            "",
+            [Unit("module_declaration", "top", 1, 1, "module top")],
+        )
+        with (
+            mock.patch.object(code, "units", return_value=cut),
+            mock.patch.object(code, "connect"),
+            mock.patch.object(code, "store", return_value=1) as stored,
+        ):
+            done = sweep.one(source, self.chosen)
+        self.assertTrue(done.ok)
+        self.assertEqual(done.how, "systemverilog by tree-sitter")
+        stored.assert_called_once()
 
     def test_a_new_document_is_indexed(self) -> None:
         with mock.patch.multiple(

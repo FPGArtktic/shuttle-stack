@@ -20,7 +20,7 @@ from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import indexing
+from . import code, indexing
 from .config import config_home
 from .documents import SUFFIXES as DOCUMENT_SUFFIXES
 from .indexing import Count
@@ -31,6 +31,25 @@ STATE = "sweep.json"
 REPORT = "report.md"
 TEXT_SUFFIXES = (".md", ".txt", ".rst")
 SUFFIXES = (*DOCUMENT_SUFFIXES, *TEXT_SUFFIXES)
+# Directories a sweep has no business reading. A build tree holds
+# generated source by the thousand and indexing it buries the file
+# somebody wrote under the file a tool wrote.
+SKIP = frozenset(
+    {
+        ".cache",
+        ".git",
+        ".shuttle",
+        ".tox",
+        ".venv",
+        "__pycache__",
+        "build",
+        "db",
+        "incremental_db",
+        "node_modules",
+        "output_files",
+        "simulation",
+    }
+)
 REPORT_TOKENS = 1000
 MAX_LISTED = 20
 
@@ -49,7 +68,7 @@ class Settings:
 
 @dataclass
 class Done:
-    """One document, and how it went."""
+    """One file, and how it went."""
 
     path: str
     sections: int = 0
@@ -108,12 +127,19 @@ def settings(file: Path | None = None) -> Settings:
     )
 
 
+def wanted(path: Path) -> bool:
+    """A file worth indexing, and not one under a build directory."""
+    if SKIP & set(path.parts):
+        return False
+    return path.suffix.lower() in SUFFIXES or code.is_source(path)
+
+
 def documents(roots: tuple[Path, ...]) -> list[Path]:
-    """Every document under the roots, in a stable order."""
+    """Every document and source file under the roots, in order."""
     found: set[Path] = set()
     for root in roots:
         for path in root.rglob("*"):
-            if path.is_file() and path.suffix.lower() in SUFFIXES:
+            if path.is_file() and wanted(path):
                 found.add(path.resolve())
     return sorted(found)
 
@@ -148,11 +174,31 @@ def save_state(state: dict[str, str]) -> None:
 
 
 def one(path: Path, chosen: Settings) -> Done:
-    """Index one document, reporting rather than raising."""
+    """Index one file, reporting rather than raising.
+
+    Source and prose go to their own shelves. The sweep does not need
+    to know which; it asks the same question of every file it found
+    and the answer says what it was.
+    """
     from . import tasks
 
     started = time.monotonic()
     try:
+        if code.is_source(path):
+            cut = code.units(str(path))
+            with closing(code.connect()) as db:
+                stored = code.store(
+                    db,
+                    path.name,
+                    cut,
+                    max((u.last_line for u in cut.units), default=0),
+                )
+            return Done(
+                str(path),
+                sections=stored,
+                seconds=round(time.monotonic() - started, 1),
+                how=f"{cut.language or 'source'} by {cut.how}",
+            )
         text = tasks.read_text(str(path))
         sections, how = indexing.split(text, chosen.heading)
         with closing(indexing.connect()) as db:
