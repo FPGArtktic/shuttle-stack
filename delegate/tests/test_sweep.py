@@ -30,7 +30,7 @@ class SettingsTest(unittest.TestCase):
     def test_the_roots_are_read_and_expanded(self) -> None:
         chosen = sweep.settings(self.write(f'roots = ["{self.root}"]\n'))
         self.assertEqual(chosen.roots, (self.root,))
-        self.assertEqual(chosen.collection, indexing.COLLECTION)
+        self.assertEqual(chosen.heading, indexing.HEADING)
 
     def test_a_missing_file_says_what_it_would_contain(self) -> None:
         with self.assertRaises(SweepError) as caught:
@@ -89,14 +89,14 @@ class RunTest(unittest.TestCase):
         self.root.mkdir()
         self.doc = self.root / "a.md"
         self.doc.write_text("## One\nalpha\n")
-        self.chosen = Settings(roots=(self.root,), collection="probe")
+        self.chosen = Settings(roots=(self.root,))
 
     def indexing_that(self, sections: int = 3) -> tuple[Any, ...]:
         return (
             mock.patch.object(
                 indexing, "split", return_value=([mock.Mock()], "headings")
             ),
-            mock.patch.object(indexing, "ensure", return_value=True),
+            mock.patch.object(indexing, "connect"),
             mock.patch.object(indexing, "store", return_value=sections),
         )
 
@@ -104,7 +104,7 @@ class RunTest(unittest.TestCase):
         with mock.patch.multiple(
             indexing,
             split=mock.DEFAULT,
-            ensure=mock.DEFAULT,
+            connect=mock.DEFAULT,
             store=mock.DEFAULT,
         ) as patched:
             patched["split"].return_value = ([mock.Mock()], "headings")
@@ -117,7 +117,7 @@ class RunTest(unittest.TestCase):
         with mock.patch.multiple(
             indexing,
             split=mock.DEFAULT,
-            ensure=mock.DEFAULT,
+            connect=mock.DEFAULT,
             store=mock.DEFAULT,
         ) as patched:
             patched["split"].return_value = ([mock.Mock()], "headings")
@@ -131,7 +131,7 @@ class RunTest(unittest.TestCase):
         with mock.patch.multiple(
             indexing,
             split=mock.DEFAULT,
-            ensure=mock.DEFAULT,
+            connect=mock.DEFAULT,
             store=mock.DEFAULT,
         ) as patched:
             patched["split"].return_value = ([mock.Mock()], "headings")
@@ -154,7 +154,7 @@ class RunTest(unittest.TestCase):
         with mock.patch.multiple(
             indexing,
             split=mock.DEFAULT,
-            ensure=mock.DEFAULT,
+            connect=mock.DEFAULT,
             store=mock.DEFAULT,
         ) as patched:
             patched["split"].return_value = ([mock.Mock()], "headings")
@@ -168,7 +168,7 @@ class RunTest(unittest.TestCase):
         with mock.patch.multiple(
             indexing,
             split=mock.DEFAULT,
-            ensure=mock.DEFAULT,
+            connect=mock.DEFAULT,
             store=mock.DEFAULT,
         ) as patched:
             patched["split"].return_value = ([mock.Mock()], "headings")

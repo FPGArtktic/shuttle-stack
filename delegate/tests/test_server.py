@@ -14,9 +14,9 @@ from shuttle_delegate.tasks import TaskError
 
 JOBLESS = {
     "status",
-    "index_document",
+    "index_path",
     "search_docs",
-    "list_indexed_docs",
+    "list_indexed",
     "start_job",
     "get_status",
     "get_result",
@@ -27,9 +27,9 @@ JOBLESS = {
 
 EXPECTED = {
     "status",
-    "index_document",
+    "index_path",
     "search_docs",
-    "list_indexed_docs",
+    "list_indexed",
     "session_open",
     "session_ask",
     "session_close",
@@ -112,10 +112,6 @@ class ToolErrorTest(unittest.TestCase):
                 fields = tool.input_schema["properties"]
                 self.assertIn("profile", fields)
                 self.assertNotIn("server", fields)
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 if __name__ == "__main__":

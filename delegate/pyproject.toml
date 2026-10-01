@@ -6,7 +6,12 @@ version = "0.1.0"
 description = "MCP server that hands bulk text work to local llama-servers"
 requires-python = ">=3.11"
 license = "GPL-3.0-only"
-dependencies = ["mcp>=2.2"]
+# sqlite-vec ships the loadable extension that puts the vector half
+# of the index in the same file as the lexical half.  The guidelines
+# ask for a reason beyond the standard library: the alternative is a
+# second service to install, back up and keep running, for an index
+# that is meant to be copyable to an air-gapped machine as one file.
+dependencies = ["mcp>=2.2", "sqlite-vec>=0.1.9"]
 
 [dependency-groups]
 dev = ["mypy>=1.18"]
@@ -30,4 +35,10 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "RET", "C4"]
 
 [tool.mypy]
 strict = true
+
+# sqlite-vec ships no py.typed marker, so the one call into it is
+# ignored at the import rather than everywhere it is used.
+[[tool.mypy.overrides]]
+module = "sqlite_vec"
+ignore_missing_imports = true
 

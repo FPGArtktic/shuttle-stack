@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import time
 import tomllib
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -43,7 +44,6 @@ class Settings:
     """Where to look and what to do with what is found."""
 
     roots: tuple[Path, ...]
-    collection: str = indexing.COLLECTION
     heading: str = indexing.HEADING
 
 
@@ -104,7 +104,6 @@ def settings(file: Path | None = None) -> Settings:
         found.append(where)
     return Settings(
         roots=tuple(found),
-        collection=str(written.get("collection", indexing.COLLECTION)),
         heading=str(written.get("heading", indexing.HEADING)),
     )
 
@@ -156,8 +155,8 @@ def one(path: Path, chosen: Settings) -> Done:
     try:
         text = tasks.read_text(str(path))
         sections, how = indexing.split(text, chosen.heading)
-        indexing.ensure(chosen.collection)
-        stored = indexing.store(chosen.collection, path.name, sections)
+        with closing(indexing.connect()) as db:
+            stored = indexing.store(db, path.name, sections)
     except Exception as error:  # noqa: BLE001 - one bad file is not the night
         return Done(
             str(path),

@@ -1,10 +1,24 @@
 # SPDX-License-Identifier: GPL-3.0-only
-"""Documents cut into sections, embedded, and searched by meaning.
+"""One SQLite file holding the index: BM25 beside the vectors.
 
-The point is a citation. A section is stored with the file and the page
-it came from, so an answer can name where it was read rather than
-asking anyone to take its word. The caller gets a few hundred tokens
-and three facts about each of them.
+The point is a citation. A section is stored with the file, the page
+and the clause it came from, so an answer can name where it was read
+rather than asking anyone to take its word. The caller gets a few
+hundred tokens and three facts about each of them.
+
+Two ways of asking, because they fail differently. A register name or
+a clause number is a lexical question: FTS5 finds `TIMER0` or `4.2.1`
+and a vector search is as likely to return the paragraph next to it.
+"what resets the peripheral" is the opposite, and BM25 cannot see the
+word the document used instead. The two result lists are fused by
+reciprocal rank and then thinned by MMR, which drops the second copy
+of a section the document repeats.
+
+The file is the whole index: the tables are the ones the WEFT OCR
+module writes, so a document indexed there is searchable here and a
+copy of the index to an air-gapped machine is one `cp`. The FTS5 table
+is kept by triggers on `chunks`, so either side's writes stay
+searchable by the other.
 
 The embeddings come from bge-m3 through Ollama, on the CPU. Measured
 here, a batch of thirty-two sections costs 62 ms each on the CPU
@@ -18,20 +32,22 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
+import struct
+import time
 import urllib.error
 import urllib.request
-import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .chunking import chunk
 from .documents import MARKER
+from .runs import home
 
-QDRANT = os.environ.get("SHUTTLE_QDRANT_URL", "http://127.0.0.1:6333")
 OLLAMA = os.environ.get("SHUTTLE_EMBED_URL", "http://127.0.0.1:11434")
 MODEL = os.environ.get("SHUTTLE_EMBED_MODEL", "bge-m3")
-COLLECTION = os.environ.get("SHUTTLE_COLLECTION", "shuttle_docs")
 
 DIMENSIONS = 1024
 BATCH = 32
@@ -48,6 +64,18 @@ EXCERPT_CHARS = 700
 SEARCH_TOKENS = 300
 MIN_EXCERPT = 60
 TIMEOUT = 300.0
+# How many each side contributes before fusion. Wider than the answer
+# because the whole point of two channels is that a section ranked
+# eighth by one may be ranked first by the other.
+CANDIDATES = 20
+# The constant in 1/(k + rank). 60 is the value the RRF paper settled
+# on; it flattens the top of each list enough that a confident wrong
+# first place cannot carry the fusion on its own.
+RRF_K = 60
+# How much of MMR's score is relevance against novelty. At 1.0 it is
+# not MMR at all; at 0.5 a datasheet's repeated boilerplate starts
+# outranking a second genuinely relevant clause.
+MMR_LAMBDA = 0.7
 # A numbered clause or a Markdown heading. The word after the number
 # has to look like a word: the first version asked only for a number
 # followed by whitespace, and a datasheet is mostly tables of numbers,
@@ -61,8 +89,79 @@ HEADING = r"^\s*(\d+(\.\d+)*\.?\s+[A-Z][a-z]{2,}|#{1,6}\s+\S)"
 # heading mode and then every page of it was cited under that footnote.
 MIN_HEADINGS = 3
 PAGE = re.compile(re.escape(MARKER).replace(r"\{page\}", r"(\d+)"))
+# The number at the front of a heading, kept apart from its words so
+# that "4.2.1" is a term a lexical search can hit.
+CLAUSE = re.compile(r"^\s*(\d+(?:\.\d+)*)\.?\s+(.*)$")
+# What FTS5 is given. Dots and hyphens stay inside a term so that
+# "4.2.1" and "GPIO-A" survive as phrases; unicode61 splits them into
+# their parts, and a quoted phrase puts them back in order.
+TERM = re.compile(r"[\w.\-/]+")
+# Every term is asked for, common ones included. Dropping the terms
+# the index is full of looked obviously right and was measured to be
+# worth nothing: on 40 exact-term questions and 22 written by
+# shuttle-long from the sections they answer, thresholds from 0.25 to
+# 1.0 of the index gave identical top-three recall, and 0.1 lost one.
+# A 44-section index is too small for document frequency to tell
+# "before" from "absolute"; both appear once. BM25 weighs the terms,
+# and the fusion below is what keeps a noisy channel in its place.
 Count = Callable[[str], int]
-NAMESPACE = uuid.UUID("5f6b2a1e-0000-5000-8000-000000000000")
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS documents (
+    path        TEXT PRIMARY KEY,
+    title       TEXT,
+    designation TEXT,
+    doc_type    TEXT,
+    pages       INTEGER NOT NULL,
+    ocr_pages   INTEGER NOT NULL,
+    chunks      INTEGER NOT NULL,
+    dimensions  INTEGER,
+    indexed_at  REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS chunks (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    document TEXT NOT NULL,
+    ordinal  INTEGER NOT NULL,
+    page     INTEGER NOT NULL,
+    clause   TEXT,
+    heading  TEXT,
+    text     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS chunks_document ON chunks (document, ordinal);
+CREATE INDEX IF NOT EXISTS chunks_clause ON chunks (clause);
+"""
+
+# External content, so the text is stored once. The triggers live in
+# the file rather than in this module on purpose: WEFT writes the same
+# tables, and its inserts have to reach the lexical index too.
+FTS = """
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+    text, clause, heading, content='chunks', content_rowid='id',
+    tokenize='unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER IF NOT EXISTS chunks_fts_insert
+AFTER INSERT ON chunks BEGIN
+    INSERT INTO chunks_fts(rowid, text, clause, heading)
+    VALUES (new.id, new.text, new.clause, new.heading);
+END;
+CREATE TRIGGER IF NOT EXISTS chunks_fts_delete
+AFTER DELETE ON chunks BEGIN
+    INSERT INTO chunks_fts(chunks_fts, rowid, text, clause, heading)
+    VALUES ('delete', old.id, old.text, old.clause, old.heading);
+END;
+CREATE TRIGGER IF NOT EXISTS chunks_fts_update
+AFTER UPDATE ON chunks BEGIN
+    INSERT INTO chunks_fts(chunks_fts, rowid, text, clause, heading)
+    VALUES ('delete', old.id, old.text, old.clause, old.heading);
+    INSERT INTO chunks_fts(rowid, text, clause, heading)
+    VALUES (new.id, new.text, new.clause, new.heading);
+END;
+"""
+
+VECTORS = (
+    "CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0("
+    f"id INTEGER PRIMARY KEY, embedding float[{DIMENSIONS}])"
+)
 
 
 class IndexingError(RuntimeError):
@@ -77,19 +176,100 @@ class Section:
     heading: str
     text: str
 
-    def point_id(self, file: str, order: int) -> str:
-        return str(uuid.uuid5(NAMESPACE, f"{file}|{self.page}|{order}"))
+    @property
+    def clause(self) -> str:
+        """The numbering at the front of the heading, if it has any."""
+        found = CLAUSE.match(self.heading)
+        return found.group(1) if found else ""
 
 
-def _post(
-    url: str, body: dict[str, Any] | None, method: str = "POST"
-) -> dict[str, Any]:
-    data = None if body is None else json.dumps(body).encode()
+@dataclass(frozen=True)
+class Hit:
+    """One section, and how it was found."""
+
+    file: str
+    page: int
+    clause: str
+    heading: str
+    text: str
+    score: float
+    how: str
+
+    def report(self, room: int) -> dict[str, Any]:
+        entry: dict[str, Any] = {
+            "file": self.file,
+            "page": self.page,
+            "section": self.heading,
+            "score": round(self.score, 4),
+            "found_by": self.how,
+            "text": self.text[:room],
+        }
+        if self.clause:
+            entry["clause"] = self.clause
+        return entry
+
+
+def index_file() -> Path:
+    """The one file. SHUTTLE_INDEX points at a shared one."""
+    value = os.environ.get("SHUTTLE_INDEX")
+    return Path(value) if value else home() / "documents.sqlite"
+
+
+def connect(path: Path | None = None) -> sqlite3.Connection:
+    """Open the index, making the tables and the triggers if absent.
+
+    Loading the vector extension is not optional and not something to
+    work around: without it a search would answer lexically and look
+    as though it had answered, which is the one failure this would
+    rather be loud about.
+    """
+    where = path or index_file()
+    where.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(where)
+    db.row_factory = sqlite3.Row
+    try:
+        import sqlite_vec
+
+        db.enable_load_extension(True)
+        sqlite_vec.load(db)
+        db.enable_load_extension(False)
+    except (ImportError, AttributeError, sqlite3.Error) as error:
+        db.close()
+        raise IndexingError(
+            f"sqlite-vec will not load ({error}); the index needs it for "
+            "the vector half of every search"
+        ) from error
+    db.executescript(SCHEMA)
+    db.execute(VECTORS)
+    _ensure_fts(db)
+    db.commit()
+    return db
+
+
+def _ensure_fts(db: sqlite3.Connection) -> None:
+    """Add the lexical index, and fill it in if rows came first.
+
+    A file written by WEFT has chunks and no FTS5 table. Creating one
+    over an existing content table leaves it empty until it is told to
+    rebuild, and an empty lexical index is exactly the silent half
+    answer this module is trying not to give.
+    """
+    found = db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        ("chunks_fts",),
+    ).fetchone()
+    if found:
+        return
+    db.executescript(FTS)
+    db.execute("INSERT INTO chunks_fts(chunks_fts) VALUES ('rebuild')")
+
+
+def _post(url: str, body: dict[str, Any]) -> dict[str, Any]:
     request = urllib.request.Request(
         url,
-        data=data,
+        data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"},
-        method=method,
+        method="POST",
     )
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT) as answer:
@@ -112,22 +292,33 @@ def embed(texts: list[str]) -> list[list[float]]:
     """Embed on the CPU, in batches, because the GPU is in use."""
     out: list[list[float]] = []
     for start in range(0, len(texts), BATCH):
+        batch = texts[start : start + BATCH]
         answer = _post(
             f"{OLLAMA}/api/embed",
-            {
-                "model": MODEL,
-                "input": texts[start : start + BATCH],
-                "options": {"num_gpu": 0},
-            },
+            {"model": MODEL, "input": batch, "options": {"num_gpu": 0}},
         )
         vectors = answer.get("embeddings") or []
-        if len(vectors) != len(texts[start : start + BATCH]):
+        if len(vectors) != len(batch):
             raise IndexingError(
                 f"{MODEL} returned {len(vectors)} embeddings for "
-                f"{len(texts[start : start + BATCH])} inputs"
+                f"{len(batch)} inputs"
             )
         out.extend(vectors)
     return out
+
+
+def _blob(vector: Iterable[float]) -> bytes:
+    values = [float(v) for v in vector]
+    if len(values) != DIMENSIONS:
+        raise IndexingError(
+            f"the index holds {DIMENSIONS}-dimension vectors, "
+            f"{MODEL} returned {len(values)}"
+        )
+    return struct.pack(f"{DIMENSIONS}f", *values)
+
+
+def _floats(blob: bytes) -> list[float]:
+    return list(struct.unpack(f"{DIMENSIONS}f", blob))
 
 
 def split(text: str, heading: str = HEADING) -> tuple[list[Section], str]:
@@ -203,77 +394,250 @@ def _within_limit(sections: list[Section]) -> list[Section]:
     return out
 
 
-def collections() -> list[str]:
-    answer = _post(f"{QDRANT}/collections", None, "GET")
-    return [c["name"] for c in answer.get("result", {}).get("collections", [])]
+def forget(db: sqlite3.Connection, file: str) -> int:
+    """Drop everything a document contributed. The triggers see it."""
+    ids = [
+        int(row["id"])
+        for row in db.execute(
+            "SELECT id FROM chunks WHERE document = ?", (file,)
+        )
+    ]
+    db.executemany("DELETE FROM vec_chunks WHERE id = ?", [(i,) for i in ids])
+    db.execute("DELETE FROM chunks WHERE document = ?", (file,))
+    db.execute("DELETE FROM documents WHERE path = ?", (file,))
+    return len(ids)
 
 
-def ensure(collection: str) -> bool:
-    """Make the collection if it is not there; say whether it was made.
-
-    Only the collection named is touched. Qdrant may be shared with
-    other work — this machine's own index sits beside ours — and a tool
-    that reaches into a collection it did not make has no business
-    doing so.
-    """
-    if collection in collections():
-        return False
-    _post(
-        f"{QDRANT}/collections/{collection}",
-        {"vectors": {"size": DIMENSIONS, "distance": "Cosine"}},
-        "PUT",
-    )
-    return True
-
-
-def store(collection: str, file: str, sections: list[Section]) -> int:
+def store(
+    db: sqlite3.Connection,
+    file: str,
+    sections: list[Section],
+    ocr_pages: int = 0,
+) -> int:
     """Embed the sections and put them in, replacing an earlier pass.
 
-    The point id is derived from the file, the page and the order, so
-    indexing a document twice replaces its sections rather than
-    doubling them.
+    One transaction, because a document half in the index is worse
+    than one not in it: a search would cite the pages that made it in
+    and no one would know the rest were missing.
     """
     if not sections:
         raise IndexingError(f"{file}: no sections to index")
     vectors = embed([section.text for section in sections])
-    points = [
-        {
-            "id": section.point_id(file, order),
-            "vector": vector,
-            "payload": {
-                "file": file,
-                "page": section.page,
-                "section": section.heading,
-                "text": section.text,
-            },
-        }
-        for order, (section, vector) in enumerate(
-            zip(sections, vectors, strict=True)
+    blobs = [_blob(vector) for vector in vectors]
+    with db:
+        forget(db, file)
+        for order, section in enumerate(sections):
+            row = db.execute(
+                "INSERT INTO chunks"
+                " (document, ordinal, page, clause, heading, text)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    file,
+                    order,
+                    section.page,
+                    section.clause,
+                    section.heading,
+                    section.text,
+                ),
+            )
+            db.execute(
+                "INSERT INTO vec_chunks (id, embedding) VALUES (?, ?)",
+                (row.lastrowid, blobs[order]),
+            )
+        db.execute(
+            "INSERT INTO documents (path, pages, ocr_pages, chunks,"
+            " dimensions, indexed_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                file,
+                max((s.page for s in sections), default=0),
+                ocr_pages,
+                len(sections),
+                DIMENSIONS,
+                time.time(),
+            ),
         )
+    return len(sections)
+
+
+def terms(question: str) -> str:
+    """The question as FTS5 reads it.
+
+    Every term is quoted, so a clause number survives as a phrase and
+    a stray bracket in the question is text rather than syntax. OR
+    rather than AND: BM25 ranks, and requiring every word would mean a
+    question with one word the document does not use finds nothing.
+    """
+    found = []
+    for word in TERM.findall(question):
+        trimmed = word.strip("./-")
+        if len(trimmed) > 1:
+            found.append('"' + trimmed.replace('"', '""') + '"')
+    return " OR ".join(dict.fromkeys(found))
+
+
+def _lexical(db: sqlite3.Connection, question: str) -> list[int]:
+    query = terms(question)
+    if not query:
+        return []
+    try:
+        rows = db.execute(
+            "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?"
+            " ORDER BY rank LIMIT ?",
+            (query, CANDIDATES),
+        ).fetchall()
+    except sqlite3.OperationalError as error:
+        raise IndexingError(
+            f"the lexical index refused {query!r}: {error}"
+        ) from error
+    return [int(row["rowid"]) for row in rows]
+
+
+def _semantic(db: sqlite3.Connection, vector: list[float]) -> list[int]:
+    rows = db.execute(
+        "SELECT id FROM vec_chunks WHERE embedding MATCH ?"
+        " AND k = ? ORDER BY distance",
+        (_blob(vector), CANDIDATES),
+    ).fetchall()
+    return [int(row["id"]) for row in rows]
+
+
+def fuse(ranked: dict[str, list[int]]) -> list[tuple[int, float, str]]:
+    """Reciprocal rank fusion, keeping which lists found each row.
+
+    Scores from BM25 and from a cosine distance are not comparable and
+    normalising them means inventing a scale; ranks are comparable by
+    construction, which is the whole argument for RRF.
+    """
+    scores: dict[int, float] = {}
+    sources: dict[int, list[str]] = {}
+    for name, ids in ranked.items():
+        for place, row in enumerate(ids, start=1):
+            scores[row] = scores.get(row, 0.0) + 1.0 / (RRF_K + place)
+            sources.setdefault(row, []).append(name)
+    out = [
+        (
+            row,
+            scores[row],
+            "both" if len(sources[row]) > 1 else sources[row][0],
+        )
+        for row in scores
     ]
-    _post(
-        f"{QDRANT}/collections/{collection}/points", {"points": points}, "PUT"
-    )
-    return len(points)
+    out.sort(key=lambda entry: (-entry[1], entry[0]))
+    return out
 
 
-def _trim(answer: dict[str, Any], count: Count, budget: int) -> dict[str, Any]:
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
+    left = sum(x * x for x in a) ** 0.5
+    right = sum(y * y for y in b) ** 0.5
+    if not left or not right:
+        return 0.0
+    return float(dot / (left * right))
+
+
+def diversify(
+    ordered: list[tuple[int, float, str]],
+    vectors: dict[int, list[float]],
+    limit: int,
+) -> list[tuple[int, float, str]]:
+    """Maximal marginal relevance over the fused list.
+
+    A datasheet repeats itself: the same note sits under every
+    register, and three hits that are the same sentence are one answer
+    taking three times the budget. A candidate without an embedding is
+    treated as novel rather than dropped, because the alternative is
+    quietly losing a lexical hit.
+    """
+    if limit <= 0:
+        return []
+    picked: list[tuple[int, float, str]] = []
+    rest = list(ordered)
+    while rest and len(picked) < limit:
+        best: float | None = None
+        best_at = 0
+        for at, entry in enumerate(rest):
+            mine = vectors.get(entry[0])
+            penalty = 0.0
+            if mine is not None and picked:
+                penalty = max(
+                    (
+                        _cosine(mine, vectors[chosen[0]])
+                        for chosen in picked
+                        if chosen[0] in vectors
+                    ),
+                    default=0.0,
+                )
+            value = MMR_LAMBDA * entry[1] - (1 - MMR_LAMBDA) * penalty
+            if best is None or value > best:
+                best, best_at = value, at
+        picked.append(rest.pop(best_at))
+    return picked
+
+
+def _rows(
+    db: sqlite3.Connection, chosen: list[tuple[int, float, str]]
+) -> list[Hit]:
+    if not chosen:
+        return []
+    places = ",".join("?" * len(chosen))
+    found = {
+        int(row["id"]): row
+        for row in db.execute(
+            "SELECT id, document, page, clause, heading, text"
+            f" FROM chunks WHERE id IN ({places})",
+            [entry[0] for entry in chosen],
+        )
+    }
+    hits = []
+    for row_id, score, how in chosen:
+        row = found.get(row_id)
+        if row is None:
+            continue
+        hits.append(
+            Hit(
+                file=str(row["document"]),
+                page=int(row["page"]),
+                clause=str(row["clause"] or ""),
+                heading=str(row["heading"] or ""),
+                text=str(row["text"]),
+                score=score,
+                how=how,
+            )
+        )
+    return hits
+
+
+def _vectors(
+    db: sqlite3.Connection, ids: Iterable[int]
+) -> dict[int, list[float]]:
+    wanted = list(ids)
+    if not wanted:
+        return {}
+    places = ",".join("?" * len(wanted))
+    return {
+        int(row["id"]): _floats(row["embedding"])
+        for row in db.execute(
+            f"SELECT id, embedding FROM vec_chunks WHERE id IN ({places})",
+            wanted,
+        )
+    }
+
+
+def _trim(
+    answer: dict[str, Any], hits: list[Hit], count: Count, budget: int
+) -> dict[str, Any]:
     """Shorten the excerpts until the whole answer fits the budget.
 
-    The whole answer, not the hits alone: the collection name and the
-    fields around them cost tokens too, and measuring only the hits
-    returned 315 against a budget of 300.
+    The whole answer, not the hits alone: the fields around them cost
+    tokens too, and measuring only the hits returned 315 against a
+    budget of 300.
 
     Evenly across the hits, because a long first one crowding out the
     rest would hide the second-best section behind the best.
     """
     room = EXCERPT_CHARS
     while True:
-        shortened = answer | {
-            "hits": [
-                hit | {"text": hit["text"][:room]} for hit in answer["hits"]
-            ]
-        }
+        shortened = answer | {"hits": [hit.report(room) for hit in hits]}
         if count(json.dumps(shortened, ensure_ascii=False)) <= budget:
             return shortened
         if room <= MIN_EXCERPT:
@@ -283,80 +647,77 @@ def _trim(answer: dict[str, Any], count: Count, budget: int) -> dict[str, Any]:
 
 def search(
     question: str,
-    collection: str = COLLECTION,
     limit: int = 3,
     count: Count | None = None,
     budget: int = SEARCH_TOKENS,
+    db: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
-    """The sections closest to the question, with where each came from.
+    """The sections nearest the question, with where each came from.
 
-    With a tokeniser the excerpts are trimmed to the budget; without
-    one they come back at their full length and the caller is told, so
-    nothing quietly claims to have been measured.
+    Both channels are tried. If the embedding model cannot be reached
+    the lexical half still answers and the reply says the other half
+    is missing: a search that had quietly become a grep would be worse
+    than one that failed.
     """
     if not question.strip():
         raise IndexingError("a search needs something to search for")
-    if collection not in collections():
-        raise IndexingError(
-            f"no collection {collection!r}; index_document makes one"
-        )
-    vector = embed([question])[0]
-    answer = _post(
-        f"{QDRANT}/collections/{collection}/points/query",
-        {"query": vector, "limit": limit, "with_payload": True},
-    )
-    hits = [
-        {
-            "file": hit["payload"].get("file", ""),
-            "page": hit["payload"].get("page", 0),
-            "section": hit["payload"].get("section", ""),
-            "score": round(float(hit.get("score", 0.0)), 3),
-            "text": hit["payload"].get("text", "")[:EXCERPT_CHARS],
+    own = db is None
+    db = db or connect()
+    try:
+        if not db.execute("SELECT 1 FROM chunks LIMIT 1").fetchone():
+            raise IndexingError(
+                f"{index_file()} holds no documents; index_path adds one"
+            )
+        ranked = {"lexical": _lexical(db, question)}
+        note = ""
+        try:
+            ranked["semantic"] = _semantic(db, embed([question])[0])
+        except IndexingError as error:
+            note = f"the semantic half is missing: {error}"
+        fused = fuse(ranked)
+        vectors = _vectors(db, (entry[0] for entry in fused))
+        hits = _rows(db, diversify(fused, vectors, limit))
+        answer: dict[str, Any] = {
+            "index": str(index_file()),
+            "searched": sorted(name for name, ids in ranked.items() if ids),
         }
-        for hit in answer.get("result", {}).get("points", [])
-    ]
-    if count is None:
-        return {"collection": collection, "hits": hits, "trimmed": False}
-    return _trim(
-        {
-            "collection": collection,
-            "hits": hits,
-            "trimmed": True,
-            "budget_tokens": budget,
-        },
-        count,
-        budget,
-    )
+        if note:
+            answer["degraded"] = note
+        if count is None:
+            answer["trimmed"] = False
+            return _trim(answer, hits, lambda _text: 0, budget)
+        answer["trimmed"] = True
+        answer["budget_tokens"] = budget
+        return _trim(answer, hits, count, budget)
+    finally:
+        if own:
+            db.close()
 
 
-def indexed(collection: str = COLLECTION) -> dict[str, Any]:
-    """Which documents are in the collection, and how much of each."""
-    if collection not in collections():
-        return {"collection": collection, "documents": [], "exists": False}
-    counts: dict[str, int] = {}
-    pages: dict[str, int] = {}
-    offset = None
-    while True:
-        body: dict[str, Any] = {"limit": 256, "with_payload": ["file", "page"]}
-        if offset is not None:
-            body["offset"] = offset
-        answer = _post(
-            f"{QDRANT}/collections/{collection}/points/scroll", body
-        )
-        result = answer.get("result", {})
-        for point in result.get("points", []):
-            name = point.get("payload", {}).get("file", "")
-            page = int(point.get("payload", {}).get("page", 0))
-            counts[name] = counts.get(name, 0) + 1
-            pages[name] = max(pages.get(name, 0), page)
-        offset = result.get("next_page_offset")
-        if offset is None:
-            break
-    return {
-        "collection": collection,
-        "exists": True,
-        "documents": [
-            {"file": name, "sections": counts[name], "pages": pages[name]}
-            for name in sorted(counts)
-        ],
-    }
+def indexed(db: sqlite3.Connection | None = None) -> dict[str, Any]:
+    """Which documents are in the file, and how much of each."""
+    own = db is None
+    db = db or connect()
+    try:
+        rows = db.execute(
+            "SELECT path, pages, chunks, ocr_pages, indexed_at"
+            " FROM documents ORDER BY path"
+        ).fetchall()
+        return {
+            "index": str(index_file()),
+            "documents": [
+                {
+                    "file": str(row["path"]),
+                    "sections": int(row["chunks"]),
+                    "pages": int(row["pages"]),
+                    "ocr_pages": int(row["ocr_pages"]),
+                    "indexed": time.strftime(
+                        "%Y-%m-%d %H:%M", time.localtime(row["indexed_at"])
+                    ),
+                }
+                for row in rows
+            ],
+        }
+    finally:
+        if own:
+            db.close()
