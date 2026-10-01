@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "shuttle": {
+      "command": "shuttle-delegate",
+      "args": ["--transport", "stdio"]
+    }
+  }
+}

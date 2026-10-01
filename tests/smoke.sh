@@ -41,6 +41,22 @@ check_python()
 	printf 'smoke: delegate tests: ok\n'
 }
 
+# The project's MCP registration is committed, so a typo in it would
+# reach a reader as a server that silently never starts.
+check_mcp_json()
+{
+	local name
+
+	jq -e '.mcpServers.shuttle.command' .mcp.json > /dev/null ||
+		fail ".mcp.json does not describe a shuttle server"
+	name=$(jq -r '.mcpServers.shuttle.command' .mcp.json)
+	[[ $name == shuttle-delegate ]] ||
+		fail ".mcp.json runs '$name', not the installed launcher"
+	jq -e '.mcpServers.shuttle.args | index("stdio")' .mcp.json \
+		> /dev/null || fail ".mcp.json does not ask for stdio"
+	printf 'smoke: .mcp.json: ok\n'
+}
+
 check_dry_run()
 {
 	local distro=$1 out
@@ -62,6 +78,7 @@ main()
 	shellcheck install.sh tests/*.sh || fail shellcheck
 	printf 'smoke: syntax and shellcheck: ok\n'
 	check_python
+	check_mcp_json
 	for distro in ubuntu arch; do
 		check_dry_run "$distro"
 	done
