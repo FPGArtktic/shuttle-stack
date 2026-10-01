@@ -37,6 +37,7 @@ and M2 the evaluation that says how far either can be trusted.
 | N-gram lookup | working, off by default — measured no gain, and slightly slower with no draft model |
 | Cascade | working, and not worth switching on here — the ladder verified on the first profile every time, and cost 3.2x the seconds |
 | Best-of-n | working — a sample failing its verifier is drawn again, warmer; 1.00 attempts per case over the evaluation set |
+| Document index | working — sections in Qdrant with file and page, searched by meaning, answers under 300 tokens |
 | PDF documents | working — text layer first, OCR only for the pages without one, in a container with no network |
 | Sessions | working — a document read once and asked repeatedly; the transcript is the record, the KV dump only a cache |
 | `start_job` / `get_status` / `get_result` | working — a file tool run in the background, polled and collected |
@@ -286,6 +287,9 @@ and the instructions repeat it.
 | `classify_file` | path, labels, question, profile | one of the labels, the vote and the agreement |
 | `extract` | path, JSON schema, instructions, pattern, until, context, attempts, cascade_profiles, profile | the fields, in the shape asked for |
 | `brainstorm` | a request, optionally a path | several options, marked unverified |
+| `index_document` | path, collection, heading | how many sections went in, and whether by heading or page |
+| `search_docs` | a question, collection, limit | a few sections with file, page and heading, under 300 tokens |
+| `list_indexed_docs` | collection | which documents are in it, with sections and pages |
 | `session_open` | path, words, pattern, until, context, profile | a session id, the document read and cached |
 | `session_ask` | a session id and a question | the answer, with the cache restored rather than the document resent |
 | `session_close` | a session id | the cache dropped, the transcript kept |
@@ -312,6 +316,57 @@ Qwen3 reasons before answering by default, and that reasoning is spent from
 the same budget as the answer. The delegate turns it off. Left on, a request
 with 200 tokens to spend returns an empty string and a finish reason of
 `length`.
+
+### The index, for a question you cannot turn into a pattern
+
+`pattern` needs you to know the wording. `index_document` reads a document
+into Qdrant so `search_docs` can find the right part of it by meaning
+instead, and every hit says which file, page and section it came from. The
+citation is the point: an answer that names its page can be checked, and one
+that does not cannot.
+
+```
+                                    tokens  cited
+absolute maximum supply voltage        264  07447_datasheet.pdf page 3
+how long may a commit subject be       262  CONTRIBUTING.md "## Commits"
+what package types are available       279  07447_datasheet.pdf page 11
+propagation delay time limits          269  07447_datasheet.pdf page 4
+```
+
+Three facts about it are worth knowing before you use it.
+
+**The budget is in tokens, not characters.** 1066 characters of a datasheet's
+dot leaders and numbers come to 549 tokens — half a token a character against
+a third for prose — so the excerpts are trimmed by measurement until the
+whole answer fits 300. A character limit would have been two very different
+answers for the same number.
+
+**Sections come from headings, or from pages, and the reply says which.** A
+heading is a numbered clause or a Markdown heading whose number is followed
+by something that looks like a word, and three of them are wanted before the
+document is believed to have a structure. Both halves of that were learned
+the hard way: the first pattern turned every row of a timing table into a
+heading, so citations read "8" and "15 5"; and then a single numbered
+footnote put a whole datasheet into heading mode, with every page of it cited
+under that footnote. Pass your own `heading` pattern when you know the
+document's shape.
+
+**A section never spans pages.** One running from page 3 to page 37 was
+stored as page 3, which sends a reader to the wrong page and is worse than no
+citation at all.
+
+The embeddings are bge-m3 through Ollama, on the CPU. On the GPU it is 43 ms
+a section against 62, and it takes 289 MiB of the card `shuttle-long` is
+using: nineteen milliseconds is not worth taking memory from the server that
+answers the questions.
+
+Only the collection you name is touched, `shuttle_docs` by default. Qdrant
+may be shared with other work — on the reference machine it is — and nothing
+here reaches into a collection it did not make.
+
+Indexing is not quick: the 37-page datasheet takes 95 seconds, of which 25 is
+reading it and the rest is embedding 44 sections. Do it once per document,
+with `start_job` if you would rather not wait.
 
 ### PDFs
 
@@ -858,11 +913,11 @@ alongside from M2. M8 is independent of all of it.
   output, best-of-n with a verifier, the cascade and the n-gram lookup are
   all in. The last two are measured and left off by default, for the reasons
   given above. Nothing of M2 is outstanding.
-- **M3 — documents.** Started: the `shuttle-docs` container and the reading
-  are in, so every tool takes a PDF (see *PDFs* above). Still to come, ported
-  from [WEFT](https://github.com/FPGArtktic/weft-mcp): `index_document`,
-  `search_docs` and `list_indexed_docs`, sections kept with their numbering,
-  and embeddings into Qdrant.
+- **M3 — documents.** Mostly done: the `shuttle-docs` container, the reading,
+  and the index with its three tools (see *PDFs* and *The index* above).
+  Still to come: the digestion the plan asks for — section summaries and
+  tables pulled into JSON ahead of time — which is overnight work and
+  belongs with M6.
 - **M4 — isolation and hardening.** The direct ports off, a bearer token on
   the delegate, the delegate itself as a Quadlet unit, the audit log rotated,
   and a network audit confirming there is still no egress.
