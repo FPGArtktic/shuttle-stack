@@ -19,7 +19,7 @@ and M2 the evaluation that says how far either can be trusted.
 
 | Component | State |
 |---|---|
-| `install.sh` phases | working — `detect plan host gpu quadlets models verify bench delegate status`, each runnable on its own |
+| `install.sh` phases | working — `detect plan host gpu quadlets models verify bench docs delegate status`, each runnable on its own |
 | `shuttle-long` | working — Qwen3-8B Q4_K_M, partial GPU offload through CDI, one slot |
 | `shuttle-fast` | working — Qwen3-1.7B Q8_0, CPU only, four parallel slots |
 | Speculative decoding | working — Qwen3-0.6B draft, 2.15x on generation where it fits in VRAM |
@@ -37,6 +37,7 @@ and M2 the evaluation that says how far either can be trusted.
 | N-gram lookup | working, off by default — measured no gain, and slightly slower with no draft model |
 | Cascade | working, and not worth switching on here — the ladder verified on the first profile every time, and cost 3.2x the seconds |
 | Best-of-n | working — a sample failing its verifier is drawn again, warmer; 1.00 attempts per case over the evaluation set |
+| PDF documents | working — text layer first, OCR only for the pages without one, in a container with no network |
 | Sessions | working — a document read once and asked repeatedly; the transcript is the record, the KV dump only a cache |
 | `start_job` / `get_status` / `get_result` | working — a file tool run in the background, polled and collected |
 | Evaluation set | working — twenty cases with known answers, two of them refusals; 20/20 on the long server, 18/20 on the fast one |
@@ -311,6 +312,39 @@ Qwen3 reasons before answering by default, and that reasoning is spent from
 the same budget as the answer. The delegate turns it off. Left on, a request
 with 200 tokens to spend returns an empty string and a finish reason of
 `length`.
+
+### PDFs
+
+A path may be a PDF, anywhere a path is taken. It is extracted in the
+`shuttle-docs` image — Tesseract and Poppler and nothing else — run with
+`--network=none`, `--read-only`, and only that document's own directory
+mounted read only. A document is data and never a program: one that tries
+something cannot reach the network, cannot write, and cannot see another
+directory.
+
+The text layer is used wherever there is one and OCR only for the pages
+without. On a 37-page datasheet that is the difference between a third of a
+second and half a minute:
+
+```
+4 pages, all with a text layer     0.3 s
+37 pages, 16 of them needing OCR  25.1 s
+```
+
+The text arrives marked with page numbers, so an answer can say which page it
+came from. Asked about the absolute maximum supply voltage with a `pattern`
+landing on the rating table, the long server answered `20V` from page 3 in ten
+seconds, and `extract` pulled `{"supply_voltage_absolute_maximum": "20V",
+"part_numbers": "CD4049UB, CD4050B"}` in five and a half.
+
+A whole datasheet is 24000 tokens against a context of 8192, so `pattern` is
+not optional here, it is the only way in. A pattern that matches nothing says
+so and names the pattern, which is how both of those examples were found: the
+first guess at the wording matched nothing at all.
+
+`./install.sh docs` builds the image. It is built rather than pulled because
+it is nine lines of apt-get and a shell script, and a reader can see all of
+it.
 
 ### Jobs, when waiting is not an option
 
@@ -824,10 +858,11 @@ alongside from M2. M8 is independent of all of it.
   output, best-of-n with a verifier, the cascade and the n-gram lookup are
   all in. The last two are measured and left off by default, for the reasons
   given above. Nothing of M2 is outstanding.
-- **M3 — documents.** OCR and indexing ported from
-  [WEFT](https://github.com/FPGArtktic/weft-mcp): Tesseract and Poppler in a
-  container with no network, the text layer first and OCR only for pages
-  without one, sections kept with their numbering, embeddings into Qdrant.
+- **M3 — documents.** Started: the `shuttle-docs` container and the reading
+  are in, so every tool takes a PDF (see *PDFs* above). Still to come, ported
+  from [WEFT](https://github.com/FPGArtktic/weft-mcp): `index_document`,
+  `search_docs` and `list_indexed_docs`, sections kept with their numbering,
+  and embeddings into Qdrant.
 - **M4 — isolation and hardening.** The direct ports off, a bearer token on
   the delegate, the delegate itself as a Quadlet unit, the audit log rotated,
   and a network audit confirming there is still no egress.

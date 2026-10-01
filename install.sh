@@ -12,6 +12,7 @@ readonly IMAGE_CUDA=ghcr.io/ggml-org/llama.cpp:server-cuda
 readonly IMAGE_CPU=ghcr.io/ggml-org/llama.cpp:server
 readonly IMAGE_CURL=docker.io/curlimages/curl
 readonly CDI_SPEC=/etc/cdi/nvidia.yaml
+readonly IMAGE_DOCS=localhost/shuttle-docs
 readonly HF_URL=https://huggingface.co
 readonly NETWORK=shuttle
 readonly SUBNET=10.89.7.0/24
@@ -26,7 +27,7 @@ readonly DRAFT_OVERHEAD_MB=256
 readonly KV_BYTES_PER_TOKEN_LAYER=2048
 readonly HEALTH_TIMEOUT=900
 readonly BENCH_PREDICT=64
-readonly PHASES=(detect plan host gpu quadlets models verify bench
+readonly PHASES=(detect plan host gpu quadlets models verify bench docs
 	delegate status)
 readonly EXEC_COMMON="--slot-save-path /cache --flash-attn on --no-webui"
 
@@ -137,7 +138,7 @@ usage()
 usage: install.sh [phase...] [options]
 
 Phases always run in this order; without any, all but bench run:
-  detect plan host gpu quadlets models verify bench delegate status
+  detect plan host gpu quadlets models verify bench docs delegate status
 
 Options:
   --dry-run                  show commands and file changes, change nothing
@@ -325,8 +326,8 @@ parse_args()
 {
 	while (( $# )); do
 		case $1 in
-		detect|plan|host|gpu|quadlets|models|verify|bench|delegate|\
-		status)
+		detect|plan|host|gpu|quadlets|models|verify|bench|docs|\
+		delegate|status)
 			phases+=("$1") ;;
 		--dry-run)		dry_run=1 ;;
 		--yes)			assume_yes=1 ;;
@@ -357,8 +358,8 @@ parse_args()
 finish_options()
 {
 	if (( ${#phases[@]} == 0 )); then
-		phases=(detect plan host gpu quadlets models verify delegate
-			status)
+		phases=(detect plan host gpu quadlets models verify docs
+			delegate status)
 	fi
 	models=(long fast)
 	if (( use_draft )); then
@@ -646,6 +647,15 @@ fact_disk()
 		"checked by models"
 }
 
+fact_docs()
+{
+	if podman image exists "$IMAGE_DOCS" 2>/dev/null; then
+		fact docs "$IMAGE_DOCS" ok
+	else
+		fact docs missing "fixed by docs"
+	fi
+}
+
 fact_uv()
 {
 	if command -v uv > /dev/null; then
@@ -688,6 +698,7 @@ load_facts()
 	fact_memory
 	fact_disk
 	fact_tools
+	fact_docs
 	fact_uv
 	facts_loaded=1
 }
@@ -1641,6 +1652,19 @@ phase_bench()
 		done
 	done
 	bench_report "${results[@]}"
+}
+
+# Tesseract and Poppler, and nothing else.  The delegate runs this
+# image with --network=none and only a document's own directory mounted
+# read only, so a PDF that tries something cannot reach anywhere and
+# cannot write.  It is built rather than pulled because it is nine
+# lines of apt-get and a shell script, and a reader can see all of it.
+phase_docs()
+{
+	require_supported
+	run podman build -t "$IMAGE_DOCS" \
+		-f "$source_dir/containers/Containerfile.shuttle-docs" \
+		"$source_dir/containers"
 }
 
 # uv builds an isolated environment and puts the launcher on PATH, so
