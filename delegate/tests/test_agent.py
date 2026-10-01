@@ -188,6 +188,63 @@ class LoopTest(unittest.TestCase):
         run = self.run_with(preset, "a", "b", "c", "d", "e")
         self.assertIn("token budget", run.stopped)
 
+    def test_asking_a_lookup_the_same_thing_stops_it(self) -> None:
+        """Measured: a succeeding tool called with identical arguments
+        seven times, because the detector only counted failures."""
+        preset = Preset(
+            name="x", tools=("search_docs", "finish"), schema=SHAPED
+        )
+        with mock.patch.object(
+            indexing, "search", return_value={"hits": []}
+        ) as searched:
+            run = self.run_with(
+                preset,
+                *[[call("search_docs", question="same")] for _ in range(6)],
+            )
+        self.assertIn("asked the same thing", run.stopped)
+        self.assertEqual(searched.call_count, 2)
+        # As many calls in the transcript as the reason counts.
+        self.assertEqual(len(run.steps), 3)
+        self.assertFalse(run.steps[-1].ok)
+
+    def test_a_different_question_is_not_a_repeat(self) -> None:
+        preset = Preset(
+            name="x", tools=("search_docs", "finish"), schema=SHAPED
+        )
+        with mock.patch.object(indexing, "search", return_value={"hits": []}):
+            run = self.run_with(
+                preset,
+                [call("search_docs", question="one")],
+                [call("search_docs", question="two")],
+                [call("search_docs", question="three")],
+                [call("finish", report={"answer": "a"})],
+            )
+        self.assertTrue(run.verified)
+
+    def test_the_verifier_may_be_run_again_after_a_write(self) -> None:
+        """It takes no arguments, so every call looks identical; that
+        is the shape of verify-loop and not a loop going nowhere."""
+        preset = Preset(
+            name="x",
+            tools=("write_file", "run_verifier", "finish"),
+            verifier=("true",),
+            image="localhost/shuttle-docs",
+        )
+        with mock.patch.object(
+            agent, "_verify", return_value=(True, "passed")
+        ):
+            run = self.run_with(
+                preset,
+                [call("run_verifier")],
+                [call("write_file", name="a.sh", text="x")],
+                [call("run_verifier")],
+                [call("write_file", name="a.sh", text="y")],
+                [call("run_verifier")],
+                [call("finish", report={"done": True})],
+            )
+        self.assertTrue(run.verified)
+        self.assertNotIn("the same thing", run.stopped)
+
     def test_repeated_prose_stops_it(self) -> None:
         preset = Preset(name="x", tools=("finish",), schema=SHAPED)
         run = self.run_with(preset, "same", "same", "same", "same")

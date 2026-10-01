@@ -63,6 +63,12 @@ MAX_LINES = 200
 # ten steps went that way, and a loop that cannot move is better
 # stopped than left to spend its budget.
 MAX_REPEATS = 2
+# Tools whose answer depends on what the run has done, so asking
+# again is progress: verify-loop writes a file and runs the verifier
+# again with the same empty arguments, which is the whole shape of
+# the preset. Everything else is a lookup, and looking the same thing
+# up a third time is not progress whether it succeeds or not.
+STATEFUL = frozenset({"run_verifier", "write_file"})
 
 
 class AgentError(RuntimeError):
@@ -739,6 +745,7 @@ def start(
     # What the tools have said, for the grounding check: a report may
     # only name what a tool returned, and this is that record.
     shown: list[str] = []
+    asked: dict[tuple[str, str], int] = {}
     # The last failing call, to notice a loop that cannot move.
     stuck: tuple[str, str] = ("", "")
     repeats = 0
@@ -816,6 +823,37 @@ def start(
                 call.name,
                 json.dumps(call.arguments, sort_keys=True, default=str),
             )
+            # The repeat detector counted failures only, so `ok` reset
+            # it and a model asking a succeeding tool the same thing
+            # forever was never caught. Measured: doc-compare over two
+            # corners of a timing report called search_docs with
+            # identical arguments seven times in a row, every one
+            # successful, and spent all twelve steps and 206 seconds
+            # on it. The third identical lookup ends the run instead,
+            # and says which tool it was.
+            if call.name not in STATEFUL:
+                asked[same] = asked.get(same, 0) + 1
+                if asked[same] > MAX_REPEATS:
+                    run.stopped = (
+                        f"{call.name} was asked the same thing "
+                        f"{asked[same]} times; the loop is not moving"
+                    )
+                    # Written down as a step, refused, so the
+                    # transcript holds as many calls as the reason
+                    # counts. The call is not performed.
+                    _record(
+                        run,
+                        Step(
+                            len(run.steps) + 1,
+                            call.name,
+                            call.arguments,
+                            run.stopped,
+                            round(time.monotonic() - at, 1),
+                            False,
+                        ),
+                        transcript,
+                    )
+                    return _close(run, transcript)
             if call.broken:
                 said, ok = call.broken, False
             elif call.name == "finish":
