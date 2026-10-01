@@ -33,9 +33,15 @@ class Completion:
 
 
 class Backend:
-    def __init__(self, endpoint: Endpoint, timeout: float = DEFAULT_TIMEOUT):
+    def __init__(
+        self,
+        endpoint: Endpoint,
+        timeout: float = DEFAULT_TIMEOUT,
+        temperature: float = 0.2,
+    ):
         self.endpoint = endpoint
         self.timeout = timeout
+        self.temperature = temperature
 
     @property
     def role(self) -> str:
@@ -87,7 +93,7 @@ class Backend:
         self,
         prompt: str,
         n_predict: int,
-        temperature: float = 0.2,
+        temperature: float | None = None,
         schema: dict | None = None,
     ) -> Completion:
         """Ask once, through the template the model was trained on.
@@ -99,7 +105,9 @@ class Backend:
         payload: dict = {
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": n_predict,
-            "temperature": temperature,
+            "temperature": (
+                self.temperature if temperature is None else temperature
+            ),
             "chat_template_kwargs": {"enable_thinking": False},
         }
         if schema is not None:

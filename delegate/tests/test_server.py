@@ -8,6 +8,7 @@ import unittest
 
 from mcp.server.mcpserver.exceptions import ToolError
 
+from shuttle_delegate.profiles import ProfileError
 from shuttle_delegate.server import anticipated, backend, mcp
 from shuttle_delegate.tasks import TaskError
 
@@ -33,9 +34,9 @@ class SurfaceTest(unittest.TestCase):
     def test_instructions_tell_the_client_to_pass_a_path(self) -> None:
         self.assertIn("path", mcp.instructions or "")
 
-    def test_an_unknown_server_is_refused(self) -> None:
-        with self.assertRaises(ValueError):
-            backend("medium")
+    def test_an_unknown_profile_is_refused(self) -> None:
+        with self.assertRaises(ProfileError):
+            backend("no-such-profile")
 
 
 if __name__ == "__main__":
@@ -83,6 +84,15 @@ class ToolErrorTest(unittest.TestCase):
         fields = tools["shuttle_ask"].input_schema["properties"]
         self.assertIn("pattern", fields)
         self.assertIn("context", fields)
+
+    def test_the_tools_take_a_profile_not_a_server(self) -> None:
+        for tool in asyncio.run(mcp.list_tools()):
+            if tool.name == "shuttle_status":
+                continue
+            with self.subTest(tool=tool.name):
+                fields = tool.input_schema["properties"]
+                self.assertIn("profile", fields)
+                self.assertNotIn("server", fields)
 
 
 if __name__ == "__main__":

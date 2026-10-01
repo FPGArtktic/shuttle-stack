@@ -380,7 +380,6 @@ def classify(
                     question=_clause("Consider:", question), text=piece
                 ),
                 LABEL_TOKENS,
-                temperature=0.0,
                 schema=schema,
             )
         )
@@ -431,7 +430,6 @@ def extract(
                 instructions=_clause("", instructions), text=chunks[0]
             ),
             n_predict,
-            temperature=0.0,
             schema=schema,
         )
     )

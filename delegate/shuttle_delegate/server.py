@@ -11,9 +11,10 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from . import audit, runs, tasks
+from . import audit, profiles, runs, tasks
 from .backend import Backend, BackendError
-from .config import ROLES, ConfigError, load_endpoints
+from .config import ConfigError, load_endpoints
+from .profiles import ProfileError
 from .retrieval import PatternError
 from .tasks import TaskError
 
@@ -22,6 +23,7 @@ from .tasks import TaskError
 # model as a message rather than as a crash it cannot read.
 EXPECTED = (
     TaskError,
+    ProfileError,
     BackendError,
     ConfigError,
     PatternError,
@@ -55,8 +57,8 @@ mcp = MCPServer(name="shuttle", instructions=INSTRUCTIONS)
 _backends: dict[str, Backend] = {}
 
 
-def backends() -> dict[str, Backend]:
-    """Connect on first use, so the server starts without the stack."""
+def servers() -> dict[str, Backend]:
+    """One connection per role, made on first use and then kept."""
     if not _backends:
         for role, endpoint in load_endpoints().items():
             _backends[role] = Backend(endpoint)
@@ -80,7 +82,7 @@ def anticipated(fn: Callable[..., Any]) -> Callable[..., Any]:
 def recorded(fn: Callable[..., dict]) -> Callable[..., dict]:
     @functools.wraps(fn)
     def wrapper(**kwargs: Any) -> dict:
-        role = kwargs.get("server", "long")
+        chosen = profiles.get(kwargs.get("profile", "long"))
         started = time.time()
         try:
             result = fn(**kwargs)
@@ -96,7 +98,11 @@ def recorded(fn: Callable[..., dict]) -> Callable[..., dict]:
             )
             raise
         counted = runs.report(
-            backend(role).count_tokens, fn.__name__, kwargs, result
+            servers()[chosen.server].count_tokens,
+            fn.__name__,
+            kwargs,
+            result,
+            chosen.report_tokens,
         )
         audit.log(
             {
@@ -113,10 +119,13 @@ def recorded(fn: Callable[..., dict]) -> Callable[..., dict]:
     return wrapper
 
 
-def backend(role: str) -> Backend:
-    if role not in ROLES:
-        raise ValueError(f"unknown server '{role}'; use one of {ROLES}")
-    return backends()[role]
+def backend(profile: str = "long") -> Backend:
+    """The server a profile names, sampled the way it asks for."""
+    chosen = profiles.get(profile)
+    server = servers()[chosen.server]
+    if server.temperature == chosen.temperature:
+        return server
+    return Backend(server.endpoint, server.timeout, chosen.temperature)
 
 
 def _describe(server: Backend) -> dict:
@@ -144,7 +153,7 @@ def _describe(server: Backend) -> dict:
 @anticipated
 def shuttle_status() -> dict:
     try:
-        return {"servers": [_describe(b) for b in backends().values()]}
+        return {"servers": [_describe(b) for b in servers().values()]}
     except ConfigError as error:
         return {"servers": [], "error": str(error)}
 
@@ -163,10 +172,10 @@ def shuttle_summarise(
     path: str,
     words: int = 200,
     focus: str = "",
-    server: str = "long",
+    profile: str = "long",
 ) -> dict:
     return tasks.summarise(
-        backend(server), tasks.read_text(path), words, focus
+        backend(profile), tasks.read_text(path), words, focus
     )
 
 
@@ -190,10 +199,10 @@ def shuttle_ask(
     pattern: str = "",
     context: int = 12,
     words: int = 200,
-    server: str = "long",
+    profile: str = "long",
 ) -> dict:
     return tasks.ask(
-        backend(server),
+        backend(profile),
         tasks.read_text(path),
         question,
         words,
@@ -215,10 +224,10 @@ def shuttle_classify(
     path: str,
     labels: list[str],
     question: str = "",
-    server: str = "fast",
+    profile: str = "extract",
 ) -> dict:
     return tasks.classify(
-        backend(server), tasks.read_text(path), labels, question
+        backend(profile), tasks.read_text(path), labels, question
     )
 
 
@@ -239,10 +248,10 @@ def shuttle_extract(
     instructions: str = "",
     pattern: str = "",
     context: int = 12,
-    server: str = "long",
+    profile: str = "extract",
 ) -> dict:
     return tasks.extract(
-        backend(server),
+        backend(profile),
         tasks.read_text(path),
         schema,
         instructions,

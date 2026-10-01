@@ -105,7 +105,11 @@ def cap(
 
 
 def report(
-    count: Callable[[str], int], tool: str, request: dict, result: dict
+    count: Callable[[str], int],
+    tool: str,
+    request: dict,
+    result: dict,
+    limit: int = REPORT_TOKENS,
 ) -> dict:
     """The capped result, with the run file that holds the rest."""
     run = write(tool, request, result)
@@ -113,6 +117,6 @@ def report(
     truncated = False
     for key in LONG_KEYS:
         if capped.get(key):
-            capped[key], cut = cap(count, str(capped[key]))
+            capped[key], cut = cap(count, str(capped[key]), limit)
             truncated = truncated or cut
     return capped | {"run": run.reference(), "report_cut": truncated}
