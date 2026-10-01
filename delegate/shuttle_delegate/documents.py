@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -25,6 +26,14 @@ MOUNT = "/docs"
 TIMEOUT = 1800.0
 MARKER = "--- page {page}"
 SUFFIXES = (".pdf",)
+# A dot leader is typography, not content: it is how a printed page
+# walks the eye from a parameter to its value. pdftotext reproduces
+# every dot, which costs tokens and puts them inside the cell, so an
+# extracted value came back as "E (PDIP) Package . . . . . . 67oC/W".
+# Two spaces take their place, which is what -layout uses between
+# columns anyway. Three dots at least, so an ellipsis in a sentence
+# and a version number are left alone.
+LEADER = re.compile(r"[ \t]*(?:\.[ \t]){3,}\.?[ \t]*")
 
 
 class DocumentError(RuntimeError):
@@ -119,6 +128,13 @@ def pages(path: str, first: int = 1, last: int = 0) -> list[Page]:
     ]
 
 
+def tidy(text: str) -> str:
+    """The page as printed, less the typography."""
+    return "\n".join(
+        LEADER.sub("  ", line).rstrip() for line in text.splitlines()
+    )
+
+
 def as_text(read: list[Page]) -> str:
     """The pages as one text, each marked with its page number.
 
@@ -127,7 +143,7 @@ def as_text(read: list[Page]) -> str:
     rather than guessing about one.
     """
     return "\n\n".join(
-        f"{MARKER.format(page=page.page)}\n{page.text.strip()}"
+        f"{MARKER.format(page=page.page)}\n{tidy(page.text).strip()}"
         for page in read
         if page.text.strip()
     )

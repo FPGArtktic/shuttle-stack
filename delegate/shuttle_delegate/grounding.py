@@ -43,7 +43,7 @@ MARKUP = re.compile(r"[`*]+")
 
 
 def flatten(text: str) -> str:
-    """Wrapping, markup and case dropped, for comparison only.
+    """Wrapping, markup, spacing and case dropped, for comparison only.
 
     The markup characters are removed from both the quotation and the
     source. In a shell script a backtick is syntax rather than markup,
@@ -51,9 +51,19 @@ def flatten(text: str) -> str:
     once the backticks are gone. That is accepted: leaving them in was
     measured to report two of three genuine citations as missing, and
     a check distrusted that often is a check nobody reads.
+
+    Space goes the same way. A datasheet column read by pdftotext
+    says "1µA" and a model writing it down says "1 µA", which is the
+    same reading of the same cell; asked for the ratings table on one
+    page, every row failed on that alone and the answer came back
+    twice and ungrounded. Removing space rather than collapsing it
+    does not loosen what a quotation has to match: the words still
+    have to be contiguous in the source, and now they may be
+    contiguous across a line break, which in a PDF column they often
+    are.
     """
     plain = MARKUP.sub("", CONTINUED.sub(" ", text))
-    return SPACE.sub(" ", plain).strip().lower()
+    return SPACE.sub("", plain).lower()
 
 
 def quotes(answer: str) -> list[str]:

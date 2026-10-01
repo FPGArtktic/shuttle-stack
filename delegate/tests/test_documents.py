@@ -31,6 +31,32 @@ def done(
     return subprocess.CompletedProcess(["podman"], code, stdout, stderr)
 
 
+class TidyTest(unittest.TestCase):
+    def test_a_dot_leader_becomes_a_gap(self) -> None:
+        self.assertEqual(
+            documents.tidy("Supply Voltage . . . . . . 20V"),
+            "Supply Voltage  20V",
+        )
+
+    def test_a_leader_ending_on_a_dot_is_taken_whole(self) -> None:
+        self.assertEqual(
+            documents.tidy("Temperature . . . . 125oC"),
+            "Temperature  125oC",
+        )
+
+    def test_a_version_number_is_left_alone(self) -> None:
+        self.assertEqual(documents.tidy("Rev 3.3.1 V"), "Rev 3.3.1 V")
+
+    def test_an_ellipsis_is_left_alone(self) -> None:
+        self.assertEqual(
+            documents.tidy("the rest ... and so on"),
+            "the rest ... and so on",
+        )
+
+    def test_trailing_space_goes_with_it(self) -> None:
+        self.assertEqual(documents.tidy("a value 20V   "), "a value 20V")
+
+
 class SuffixTest(unittest.TestCase):
     def test_a_pdf_is_a_document(self) -> None:
         self.assertTrue(documents.is_document("a/b/Datasheet.PDF"))

@@ -33,9 +33,11 @@ class FakeBackend:
     def __init__(self, n_ctx: int = 4096, answers: object = "a summary"):
         self._n_ctx = n_ctx
         self._answers = answers
+        self.finish = "stop"
         self.prompts: list[str] = []
         self.schemas: list[dict[str, Any] | None] = []
         self.temperatures: list[float | None] = []
+        self.n_predicts: list[int] = []
 
     def context_size(self) -> int:
         return self._n_ctx
@@ -53,10 +55,16 @@ class FakeBackend:
         self.prompts.append(prompt)
         self.schemas.append(schema)
         self.temperatures.append(temperature)
+        self.n_predicts.append(n_predict)
         answer = self._answers
         if callable(answer):
             answer = answer(len(self.prompts), prompt)
-        return Completion(content=str(answer), tokens_in=10, tokens_out=2)
+        return Completion(
+            content=str(answer),
+            tokens_in=10,
+            tokens_out=2,
+            truncated=self.finish == "length",
+        )
 
 
 class ReadTextTest(unittest.TestCase):
@@ -159,10 +167,28 @@ class ExtractTest(unittest.TestCase):
         self.assertEqual(backend.schemas[0], SCHEMA)
 
     def test_a_text_needing_several_pieces_is_refused(self) -> None:
-        backend = FakeBackend(n_ctx=1200, answers=json.dumps({"a": "b"}))
+        backend = FakeBackend(n_ctx=4096, answers=json.dumps({"a": "b"}))
         with self.assertRaises(TaskError) as caught:
             extract(backend, "paragraph.\n\n" * 400, SCHEMA)
         self.assertIn("summarise it first", str(caught.exception))
+
+    def test_an_answer_cut_off_by_the_cap_is_refused(self) -> None:
+        """Half a table is not a table, and retrying cuts it elsewhere."""
+        backend = FakeBackend(answers=json.dumps({"a": "b"}))
+        backend.finish = "length"
+        with self.assertRaises(TaskError) as caught:
+            extract(backend, "a short note.", SCHEMA)
+        self.assertIn("cut off", str(caught.exception))
+        self.assertEqual(len(backend.prompts), 1)
+
+    def test_the_room_kept_for_the_answer_follows_the_text(self) -> None:
+        backend = FakeBackend(n_ctx=8192, answers=json.dumps({"a": "b"}))
+        extract(backend, "a short note.", SCHEMA)
+        short = backend.n_predicts[0]
+        backend = FakeBackend(n_ctx=8192, answers=json.dumps({"a": "b"}))
+        extract(backend, "a longer note.\n\n" * 200, SCHEMA)
+        self.assertGreater(backend.n_predicts[0], short)
+        self.assertLessEqual(backend.n_predicts[0], 8192 // 2)
 
     def test_a_schema_that_is_not_an_object_is_refused(self) -> None:
         with self.assertRaises(TaskError):

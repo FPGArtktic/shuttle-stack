@@ -573,6 +573,30 @@ def classify(
     } | work.report()
 
 
+# Room for a structured answer, measured against the text rather than
+# against the context. Extraction copies out of its input: a ratings
+# table of two dozen rows is about as long as the page it came from,
+# where a summary is a fraction of it. A fixed eighth of 8192 cut one
+# off in the middle of a string, and a fixed half would leave a short
+# schema most of the context idle while halving what can be read in
+# one pass.
+EXTRACT_FLOOR = 512
+
+
+def _room_to_extract(backend: Server, text: str) -> int:
+    """How many tokens to keep for the answer, given the text.
+
+    Never more than half the context, whatever the text asks for: the
+    other half has to hold the text, and a reservation that leaves no
+    room turns "this needs three pieces, summarise it first" into
+    "there is no room", which says nothing a caller can act on.
+    """
+    context = backend.context_size()
+    floor = min(EXTRACT_FLOOR, context // 4)
+    asked = backend.count_tokens(text)
+    return min(context // 2, max(floor, asked + asked // 4 + 64))
+
+
 def extract(
     backend: Server,
     text: str,
@@ -599,7 +623,7 @@ def extract(
     if schema.get("type") != "object":
         raise TaskError("schema must be a JSON schema of type 'object'")
     text, matched = narrowed(text, pattern, context, until)
-    n_predict = max(256, backend.context_size() // 8)
+    n_predict = _room_to_extract(backend, text)
     chunks = fit(backend, text, n_predict)
     if not chunks:
         raise TaskError("nothing to extract from")
@@ -624,6 +648,15 @@ def extract(
                 prompt, n_predict, temperature=temperature, schema=schema
             )
         )
+        # A structured answer that ran out of room is not a bad
+        # answer to repair but an incomplete one, and drawing it again
+        # will cut it in a different place. Say so instead.
+        if work.truncated:
+            raise TaskError(
+                f"shuttle-{backend.role} ran out of room after "
+                f"{n_predict} tokens and the answer is cut off; ask for "
+                "fewer fields, or narrow the text with a pattern"
+            )
         fields = _decode(answer, "the fields")
         missing = fields_in_source(fields, chunks[0])
         if not missing:
