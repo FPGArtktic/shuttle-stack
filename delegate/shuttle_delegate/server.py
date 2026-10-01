@@ -14,6 +14,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from . import (
+    answers,
     audit,
     cascade,
     code,
@@ -286,6 +287,14 @@ def ask_file(
     cascade_profiles: str = "",
     profile: str = "long",
 ) -> dict[str, Any]:
+    # A question asked again is answered from the index without the
+    # server, which here is the difference between tens of seconds and
+    # a tenth of one. Only a verified answer is ever kept, and only a
+    # near-exact repeat is served; see answers.MAX_DISTANCE for what
+    # that cost and why it is not looser.
+    kept = answers.held(path, question)
+    if kept is not None:
+        return kept
     text = tasks.read_text(path)
 
     def once(chosen: str) -> dict[str, Any]:
@@ -300,9 +309,16 @@ def ask_file(
             attempts,
         )
 
-    if not cascade_profiles:
-        return once(profile)
-    return cascade.climb(cascade.ladder(cascade_profiles), once)
+    if cascade_profiles:
+        result = cascade.climb(cascade.ladder(cascade_profiles), once)
+    else:
+        result = once(profile)
+    # A narrowed answer is not an answer to the question on its own:
+    # it was read from the region the pattern matched, and the next
+    # caller may pass a different one.
+    if not pattern:
+        answers.keep(path, question, result)
+    return result
 
 
 @mcp.tool(
@@ -572,10 +588,16 @@ def search_code(
 @mcp.tool(
     description="List what is indexed: documents with how many "
     "sections and pages each contributed, source with its language "
-    "and how it was cut. Call it to find out whether something is "
-    "worth indexing again, or at all."
+    "and how it was cut, and the files that have kept answers. Call "
+    "it to find out whether something is worth indexing again, or at "
+    "all."
 )
 @anticipated
 def list_indexed() -> dict[str, Any]:
     with closing(code.connect()) as db:
-        return indexing.indexed(db) | {"sources": code.indexed(db)["sources"]}
+        answers.prepare(db)
+        return (
+            indexing.indexed(db)
+            | {"sources": code.indexed(db)["sources"]}
+            | answers.kept(db)
+        )
