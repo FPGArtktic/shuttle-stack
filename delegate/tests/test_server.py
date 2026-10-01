@@ -12,8 +12,13 @@ from shuttle_delegate.profiles import ProfileError
 from shuttle_delegate.server import anticipated, backend, mcp
 from shuttle_delegate.tasks import TaskError
 
+JOBLESS = {"status", "start_job", "get_status", "get_result"}
+
 EXPECTED = {
     "status",
+    "start_job",
+    "get_status",
+    "get_result",
     "summarize_file",
     "ask_file",
     "classify_file",
@@ -87,7 +92,7 @@ class ToolErrorTest(unittest.TestCase):
 
     def test_the_tools_take_a_profile_not_a_server(self) -> None:
         for tool in asyncio.run(mcp.list_tools()):
-            if tool.name == "status":
+            if tool.name in JOBLESS:
                 continue
             with self.subTest(tool=tool.name):
                 fields = tool.input_schema["properties"]

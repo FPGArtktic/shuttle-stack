@@ -14,6 +14,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from . import audit, profiles, runs, tasks
 from .backend import Backend, BackendError
 from .config import ConfigError, load_endpoints
+from .jobs import JobError, Queue
 from .profiles import ProfileError
 from .retrieval import PatternError
 from .tasks import TaskError
@@ -23,6 +24,7 @@ from .tasks import TaskError
 # model as a message rather than as a crash it cannot read.
 EXPECTED = (
     TaskError,
+    JobError,
     ProfileError,
     BackendError,
     ConfigError,
@@ -79,44 +81,70 @@ def anticipated(fn: Callable[..., Any]) -> Callable[..., Any]:
 # The caller gets a report under a hard token limit and the name of the
 # file holding the rest; every call leaves a line in the audit log,
 # whether it answered or failed.
-def recorded(fn: Callable[..., dict]) -> Callable[..., dict]:
-    @functools.wraps(fn)
-    def wrapper(**kwargs: Any) -> dict:
-        chosen = profiles.get(kwargs.get("profile", "long"))
-        started = time.time()
-        try:
-            result = fn(**kwargs)
-        except Exception as error:
-            audit.log(
-                {
-                    "tool": fn.__name__,
-                    "args": kwargs,
-                    "ok": False,
-                    "seconds": round(time.time() - started, 2),
-                    "error": str(error),
-                }
-            )
-            raise
-        counted = runs.report(
-            servers()[chosen.server].count_tokens,
-            fn.__name__,
-            kwargs,
-            result,
-            chosen.report_tokens,
-        )
+def perform(name: str, call: Callable[..., dict], kwargs: dict) -> dict:
+    """Do the work, cap the report, write the run, log the line.
+
+    One place, because a job has to be recorded the same way as the
+    call that could afford to wait for its answer.
+    """
+    chosen = profiles.get(kwargs.get("profile", "long"))
+    started = time.time()
+    try:
+        result = call(**kwargs)
+    except Exception as error:
         audit.log(
             {
-                "tool": fn.__name__,
+                "tool": name,
                 "args": kwargs,
-                "ok": True,
+                "ok": False,
                 "seconds": round(time.time() - started, 2),
-                "local_tokens": result.get("local_tokens"),
-                "run": counted["run"],
+                "error": str(error),
             }
         )
-        return counted
+        raise
+    counted = runs.report(
+        servers()[chosen.server].count_tokens,
+        name,
+        kwargs,
+        result,
+        chosen.report_tokens,
+    )
+    audit.log(
+        {
+            "tool": name,
+            "args": kwargs,
+            "ok": True,
+            "seconds": round(time.time() - started, 2),
+            "local_tokens": result.get("local_tokens"),
+            "run": counted["run"],
+        }
+    )
+    return counted
+
+
+# Anything recorded can also be run as a job: the two paths differ only
+# in who waits.
+JOBABLE: dict[str, Callable[..., dict]] = {}
+QUEUE = Queue()
+
+
+def recorded(fn: Callable[..., dict]) -> Callable[..., dict]:
+    JOBABLE[fn.__name__] = fn
+
+    @functools.wraps(fn)
+    def wrapper(**kwargs: Any) -> dict:
+        return perform(fn.__name__, fn, kwargs)
 
     return wrapper
+
+
+def as_job(tool: str) -> Callable[..., dict]:
+    inner = JOBABLE[tool]
+
+    def run(**kwargs: Any) -> dict:
+        return perform(tool, inner, kwargs)
+
+    return run
 
 
 def backend(profile: str = "long") -> Backend:
@@ -258,3 +286,42 @@ def extract(
         pattern,
         context,
     )
+
+
+@mcp.tool(
+    description="Run one of the file tools in the background and return "
+    "a job id at once. Use this when the file is large: a summary of a "
+    "35 KB script took four minutes here, and a client that waits that "
+    "long gives up before the server answers. `tool` is the name of the "
+    "tool to run and `arguments` the dictionary you would have passed "
+    "it. Poll with get_status and collect with get_result."
+)
+@anticipated
+def start_job(tool: str, arguments: dict) -> dict:
+    if tool not in JOBABLE:
+        raise JobError(
+            f"{tool!r} cannot be run as a job; the ones that can are "
+            f"{sorted(JOBABLE)}"
+        )
+    return QUEUE.start(tool, as_job(tool), arguments).report()
+
+
+@mcp.tool(
+    description="Say whether a job is queued, running, done or failed, "
+    "and how long it has waited and run. A job that failed carries the "
+    "reason here; get_result would only raise it again."
+)
+@anticipated
+def get_status(job: str) -> dict:
+    return QUEUE.find(job).report()
+
+
+@mcp.tool(
+    description="Collect a finished job's answer, in the same shape the "
+    "tool would have returned had you waited for it, with the run file "
+    "and the tokens it spent. A job still queued or running is an error "
+    "rather than an empty answer; ask get_status first."
+)
+@anticipated
+def get_result(job: str) -> dict:
+    return QUEUE.collect(job)
