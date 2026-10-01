@@ -40,7 +40,7 @@ and M2 the evaluation that says how far either can be trusted.
 | Document index | working — one SQLite file, BM25 and vectors fused, sections cited by file, page and clause, answers under 300 tokens |
 | Source index | working — Tree-sitter units for fourteen languages, cited by file and line range; falls back to blank-line blocks and says why |
 | Bounded agents | working — `agent_start` runs a preset until a verifier agrees or a budget is spent; a preset with no verifier is refused |
-| Code graph | working — includes, calls, instantiation, inherit, DEPENDS and every variable assignment, read off the parse; `find_references` answers with file:line and no model |
+| Code graph | working — includes, calls, instantiation, inherit, DEPENDS and every variable assignment, read off the parse; `find_references` answers with file:line and no model, `expand_symbol` one hop further |
 | Network audit | working — `install.sh audit` proves no egress with two probes, and checks what each server publishes and where |
 | Audit log rotation | working — eight megabytes a generation, four kept, rotated before the write |
 | Backup | working — `shuttle-backup` writes one tar holding the index, the transcripts and the log; the index copied through SQLite, not byte for byte |
@@ -310,6 +310,7 @@ and the instructions repeat it.
 | `search_docs` | a question, limit | a few sections with file, page and heading, under 300 tokens |
 | `search_code` | a question, limit | a few units with file and line range, under 300 tokens |
 | `find_references` | a name, a relation, limit | every file:line that names it, with no model asked |
+| `expand_symbol` | a name, hops, limit | where it is defined with the head of the definition, who names it, and what those places reach, each as file:line |
 | `agent_start` | a task, a preset | the report, which budget stopped it, and the directory holding every step |
 | `agent_presets` | nothing | the presets, with each one's budget and what verifies it |
 | `grade_run` | a run, a verdict, a correction | the verdict recorded, and how many cases the set now holds |
@@ -591,6 +592,82 @@ for a name the file defines itself — everything in a shell script is a
 command, and `ls` is not an edge in anybody's graph. And C calls are all
 recorded, including library ones, which makes a large C file produce a lot of
 edges; that is what "includes and calls" asks for.
+
+A `${...}` is cut out of a value before it is read as a list, nesting and
+all. Skipping a word holding a `${` is not enough, because an expansion can
+hold whitespace and only its first word holds the brace:
+`${@bb.utils.contains('XEN_TARGET_ARCH', 'x86_64', 'dev86-native', '', d)}`
+put `'x86_64',` and `'dev86-native',` into the graph as recipes. Cutting the
+expansion removes 16 of `xen-tools.inc`'s 183 edges and 5 of `xen.inc`'s 75,
+all of them that or a trailing line continuation, and loses nothing else.
+Resolved values are the separate question the design notes answer with
+`bitbake -e` as an indexed document; this graph is the static
+approximation.
+
+### Two hops, for a question whose subject is not the name
+
+`find_references` answers "who instantiates `counter_top`". It does not
+answer "which layer overrides `EXTRA_OECONF`", although it looks as though
+it should: the answer there is the recipe that assigns it and what that
+recipe inherits, and the inherit is a second hop away. `expand_symbol` is
+that hop. Still a join and not a search — every edge carries its line and
+every unit its span, so the unit enclosing an edge is a comparison.
+
+```
+counter_top    defined   counter_top.sv:24   module_declaration header (24-41)
+                         | module counter_top #(
+                         |     parameter int CLK_HZ    = 50_000_000,
+                         |     parameter int TICK_HZ   = 4,
+                         | ) (
+                         |     input  logic       clk,
+               named     counter_top_tb.sv:35   instantiate
+               reaches   debouncer       counter_top.sv:54
+                                           -> debouncer.sv:19
+                         clk_tick        counter_top.sv:97
+                                           -> clk_tick.v:20
+                         updown_counter  counter_top.sv:108
+                                           -> updown_counter.sv:16
+```
+
+The head of a definition is free. The chunker already emits a container's
+head as its own unit, so for HDL those lines are the ports and the
+parameters and for C they are the signature; nothing parses an interface.
+What makes the body reachable is the naming: a container's inner units are
+named after it, so the separator match that finds `RDEPENDS:${PN}` from
+`RDEPENDS` also gives a module's whole extent from its header.
+
+A `defined_at` of `-` means the index holds no definition of that name,
+which is what a call into a library looks like. It is not a failure and
+nothing guesses at one.
+
+Three things the measurement changed, over `meta-virtualization` and the
+WEFT counter example. Ordering what a place reaches by line filled all
+twelve slots of `RDEPENDS` with `SUMMARY`, `DESCRIPTION`, `HOMEPAGE`,
+`SECTION`, `LICENSE` and `DEPENDS` from the first fourteen lines of
+`openvswitch.inc`, and the `inherit autotools` on line 75 — the one
+structural fact in the file — did not make the budget; the order is now a
+fixed precedence over relation kinds, what a file pulls in first and a
+variable assignment last. One ranked list then spent the whole budget on
+the file with the most edges and said nothing about the other three, so
+each place answers before any place answers twice. And a `.bbappend`
+inherits at the top and overrides at the bottom, so the unit around the
+override holds neither: the rest of the file is read for the structural
+kinds alone.
+
+Through the scout, with the four-layer question, three steps and 18 seconds:
+
+```
+which layer overrides EXTRA_OECONF
+  find_references -> expand_symbol -> finish        verified, 3 steps, 17.7s
+  places  libxcrypt_%.bbappend:4  openvswitch.inc:36
+          xen-tools.inc:743       xen.inc:123
+```
+
+All four are right, and the loop reached for the second hop without being
+told to. The prose beside them is weaker than the places: one run wrote
+"the layers that inherit from EXTRA_OECONF", which has the direction
+backwards. Only `places` is grounded, and grounding gates what it checks —
+the same limit a verifier has.
 
 ### Grading an answer, and what it is for
 
@@ -1175,9 +1252,9 @@ alongside from M2. M8 is independent of all of it.
   them would cut it off; the token assumes an HTTP delegate where this one
   speaks stdio, on which a bearer token means nothing.
 - **M5 — code graphs and constrained agents.** Mostly done: the graph, the
-  scout, and the bounded loop above meet two of the milestone's three
-  criteria. Still to come: `doc-extract` against five reference documents,
-  which needs the reference JSON, and the two-hop symbol expansion.
+  two-hop expansion, the scout, and the bounded loop above meet two of the
+  milestone's three criteria. Still to come: `doc-extract` against five
+  reference documents, which needs the reference JSON.
 - **M6 — batch work.** Partly done: the timer, the watched directories, the
   overnight indexing of both documents and source, a morning report short
   enough to read in a thousand tokens, and the answer cache — narrower than
@@ -1239,6 +1316,13 @@ which file assigns RDEPENDS   verified  4 steps  13s
                               openvswitch.inc:16, :19, :20, :21, :22
                               openvswitch_git.bb:7, :107, :108
 ```
+
+With `expand_symbol` in its allowlist the scout reaches for the second hop
+itself. "What does counter_top instantiate, and where is each of those
+modules defined" is three steps and 19 seconds — `find_references`,
+`expand_symbol`, `finish` — and the three modules come back with the right
+file and line for each. See *Two hops* above for where the prose is weaker
+than the places.
 
 **Two things that mattered more than the loop.** Putting the report schema
 inside the `finish` tool, so the shape is held by the decoding grammar rather
