@@ -8,6 +8,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from shuttle_delegate import audit, runs
 
@@ -21,8 +22,11 @@ class HomeTest(unittest.TestCase):
     def setUp(self) -> None:
         self.dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.dir.cleanup)
-        os.environ["SHUTTLE_HOME"] = self.dir.name
-        self.addCleanup(os.environ.pop, "SHUTTLE_HOME", None)
+        # patch.dict restores what was there; popping the variable
+        # would strip it for every test that runs afterwards.
+        patch = mock.patch.dict(os.environ, {"SHUTTLE_HOME": self.dir.name})
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def test_the_environment_decides_where_runs_land(self) -> None:
         self.assertEqual(runs.home(), Path(self.dir.name))
@@ -56,8 +60,11 @@ class ReportTest(unittest.TestCase):
     def setUp(self) -> None:
         self.dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.dir.cleanup)
-        os.environ["SHUTTLE_HOME"] = self.dir.name
-        self.addCleanup(os.environ.pop, "SHUTTLE_HOME", None)
+        # patch.dict restores what was there; popping the variable
+        # would strip it for every test that runs afterwards.
+        patch = mock.patch.dict(os.environ, {"SHUTTLE_HOME": self.dir.name})
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def test_the_whole_answer_reaches_the_file(self) -> None:
         whole = "sentence. " * 2000
@@ -98,8 +105,11 @@ class AuditTest(unittest.TestCase):
     def setUp(self) -> None:
         self.dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.dir.cleanup)
-        os.environ["SHUTTLE_HOME"] = self.dir.name
-        self.addCleanup(os.environ.pop, "SHUTTLE_HOME", None)
+        # patch.dict restores what was there; popping the variable
+        # would strip it for every test that runs afterwards.
+        patch = mock.patch.dict(os.environ, {"SHUTTLE_HOME": self.dir.name})
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def path(self) -> Path:
         return Path(self.dir.name) / audit.NAME
