@@ -213,6 +213,7 @@ def one(path: Path, chosen: Settings) -> Done:
                     path.name,
                     cut,
                     max((u.last_line for u in cut.units), default=0),
+                    str(path.resolve()),
                 )
             return Done(
                 str(path),

@@ -589,7 +589,9 @@ def index_path(
         cut = code.units(path)
         lines = len(cut.units) and max(u.last_line for u in cut.units)
         with closing(code.connect()) as db:
-            stored = code.store(db, name, cut, lines)
+            stored = code.store(
+                db, name, cut, lines, str(Path(path).resolve())
+            )
         answer = {
             "file": name,
             "index": str(indexing.index_file()),

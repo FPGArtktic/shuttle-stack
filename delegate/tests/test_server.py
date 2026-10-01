@@ -4,10 +4,15 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 from mcp.server.mcpserver.exceptions import ToolError
 
+from shuttle_delegate import code, server
+from shuttle_delegate.code import Cut, Unit
 from shuttle_delegate.profiles import ProfileError
 from shuttle_delegate.server import anticipated, backend, mcp
 from shuttle_delegate.tasks import TaskError
@@ -122,6 +127,35 @@ class ToolErrorTest(unittest.TestCase):
                 fields = tool.input_schema["properties"]
                 self.assertIn("profile", fields)
                 self.assertNotIn("server", fields)
+
+
+class IndexPathTest(unittest.TestCase):
+    """Indexing has to leave behind enough to open the file again.
+
+    A citation is a name and a line, so the name alone was enough for
+    a long time and nothing noticed it was all that got stored. It is
+    not enough for an agent: read_lines resolves a name through the
+    index, and a source indexed without its path cannot be read.
+    """
+
+    def test_a_source_file_is_indexed_with_where_it_came_from(self) -> None:
+        with tempfile.TemporaryDirectory() as where:
+            source = Path(where) / "top.sv"
+            source.write_text("module top; endmodule\n")
+            cut = Cut(
+                "top.sv",
+                "systemverilog",
+                "tree-sitter",
+                "",
+                [Unit("module_declaration", "top", 1, 1, "module top")],
+            )
+            with (
+                mock.patch.object(code, "units", return_value=cut),
+                mock.patch.object(code, "connect"),
+                mock.patch.object(code, "store", return_value=1) as stored,
+            ):
+                server.index_path(str(source))
+            self.assertEqual(stored.call_args.args[-1], str(source.resolve()))
 
 
 if __name__ == "__main__":

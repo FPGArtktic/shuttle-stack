@@ -454,5 +454,36 @@ class IndexTest(unittest.TestCase):
         self.assertFalse(again["cached"])
 
 
+class LocationTest(IndexTest):
+    """Where a file was read from, which a citation does not need.
+
+    A citation is a name and a line, so the index got away with
+    storing only the name for a long time. An agent that wants to
+    read the lines around a reference cannot: it knows
+    `counter_top.sv` is indexed and not where it is.
+    """
+
+    def test_a_file_indexed_without_a_path_does_not_resolve(self) -> None:
+        self.feed()
+        self.assertIsNone(code.located(self.db, "counter.sv"))
+
+    def test_the_path_comes_back_when_the_file_is_still_there(self) -> None:
+        here = Path(self.dir.name) / "counter.sv"
+        here.write_text("module counter;\nendmodule\n")
+        with mock.patch.object(
+            indexing, "embed", side_effect=self.embedding_for
+        ):
+            code.store(self.db, "counter.sv", CUT, 12, str(here))
+        self.assertEqual(code.located(self.db, "counter.sv"), here)
+
+    def test_a_path_that_has_gone_away_does_not_resolve(self) -> None:
+        gone = Path(self.dir.name) / "gone.sv"
+        with mock.patch.object(
+            indexing, "embed", side_effect=self.embedding_for
+        ):
+            code.store(self.db, "counter.sv", CUT, 12, str(gone))
+        self.assertIsNone(code.located(self.db, "counter.sv"))
+
+
 if __name__ == "__main__":
     unittest.main()

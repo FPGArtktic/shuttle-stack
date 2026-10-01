@@ -133,6 +133,7 @@ class RunTest(unittest.TestCase):
         self.assertTrue(done.ok)
         self.assertEqual(done.how, "systemverilog by tree-sitter")
         stored.assert_called_once()
+        self.assertEqual(stored.call_args.args[-1], str(source.resolve()))
 
     def test_a_new_document_is_indexed(self) -> None:
         with mock.patch.multiple(
