@@ -33,6 +33,10 @@ and M2 the evaluation that says how far either can be trusted.
 | `shuttle_classify` | working — labels enforced by a schema, votes across parts, reports agreement |
 | `shuttle_extract` | working — fields enforced by a schema, narrows by regexp; refuses a file that needs more than one part |
 | Evaluation set | working — twenty cases with known answers, two of them refusals; 20/20 on the long server, 18/20 on the fast one |
+| Profiles | working — `long`, `fast`, `extract`; endpoint, sampling and report limit, overridable in `profiles.toml` |
+| Report limit and run files | working — a thousand tokens back, the whole output to `.shuttle/runs/<id>.md` |
+| Audit log | working — one JSONL line per call in `.shuttle/audit.jsonl`, success or failure |
+| Citation grounding | working — a quoted span absent from the source is listed rather than trusted |
 | Ubuntu 24.04 | not yet on hardware — the dry runs pass in CI, the system-changing phases have only been run on Arch |
 
 Neither milestone includes any of the following, and no placeholders are left
@@ -256,6 +260,59 @@ the same budget as the answer. The delegate turns it off. Left on, a request
 with 200 tokens to spend returns an empty string and a finish reason of
 `length`.
 
+### Profiles
+
+A profile names one way of asking: which server answers, how it is sampled,
+and how much of the answer comes back. Every tool takes one.
+
+| Profile | Server | Temperature | Used by default for |
+|---|---|---|---|
+| `long` | `shuttle-long` | 0.2 | `shuttle_summarise`, `shuttle_ask` |
+| `fast` | `shuttle-fast` | 0.2 | nothing; ask for it when concurrency matters |
+| `extract` | `shuttle-long` | 0.0 | `shuttle_classify`, `shuttle_extract` |
+
+Schema-bound work is not sampled: there is one right shape for the answer
+and temperature can only move it away from that.
+
+`~/.config/shuttle/profiles.toml` overrides a key or adds a profile; what it
+does not mention keeps the built-in value.
+
+```toml
+[long]
+temperature = 0.4
+
+[strict]
+server = "fast"
+temperature = 0.0
+report_tokens = 400
+```
+
+A key no profile has, a server that is not one of the two, a temperature
+outside 0.0 to 2.0, or a report of no tokens is an error naming the profile
+rather than a value quietly ignored.
+
+### What comes back, and where the rest goes
+
+A tool returns a report of at most `report_tokens`, a thousand by default,
+measured by the server's own tokeniser rather than estimated. The whole of
+what the model produced goes to `.shuttle/runs/<id>.md` next to the working
+directory, together with the request that produced it, and the report carries
+that path. A cut report says so in `report_cut`. Structured fields are never
+cut: a schema bounds them already, and half a JSON object is worth less than
+none.
+
+Every call appends one line to `.shuttle/audit.jsonl`, whether it answered or
+failed, with the arguments, the seconds, the tokens spent and the run file.
+
+`shuttle_ask` also reports `quotes` and `quotes_grounded`. Every quoted or
+backticked span in the answer is compared against the text the model was
+shown, and any that is not there is listed in `quotes_not_in_source`. This
+costs nothing and catches the worst failure available: on the first day of
+this project the 8B server answered a question about the installer wrongly
+and supported it with a sentence that appears nowhere in the file. A
+fabricated citation reads exactly like a real one, so it is checked rather
+than trusted.
+
 ### Using it well
 
 Delegate volume, not judgement. The local models are good when the material
@@ -285,6 +342,11 @@ deciding what matters. Keep the choosing, hand over the reading.
   is both better and faster; see the evaluation below.
 - **Read `local_tokens` in every reply.** It is the work the machine did, and
   therefore the work your context did not have to hold.
+- **Read `quotes_not_in_source` when `shuttle_ask` answers.** A quotation the
+  source does not contain means the answer was reconstructed rather than
+  read, and nothing else in the reply is more trustworthy than that.
+- **Read the run file when the report was cut.** `report_cut` says when the
+  thousand-token limit bit, and `run` says where the rest is.
 
 A worked pair, both measured on this machine: `install.sh` at 35 KB summarised
 for 13260 local tokens, and `CONTRIBUTING.md` yielding its subject-length
