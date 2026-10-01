@@ -54,7 +54,7 @@ it. The same rules apply as above, with the language's own conventions:
   `git bisect` never stops on a broken tree.
 - Subject: `subsystem: imperative description`, at most 72 characters, no
   trailing period. Subsystems: `install`, `plan`, `quadlet`, `models`,
-  `verify`, `bench`, `delegate`, `readme`, `tests`, `build`.
+  `verify`, `bench`, `delegate`, `docs`, `readme`, `tests`, `build`.
 - Body wrapped at 72 columns. It describes the problem and why it is
   solved this way; it does not repeat the diff. No "This patch...", no
   first person.
