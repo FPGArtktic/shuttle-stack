@@ -7,10 +7,64 @@
 [![latest tag](https://img.shields.io/github/v/tag/FPGArtktic/shuttle-stack)](https://github.com/FPGArtktic/shuttle-stack/tags)
 [![licence: GPL-3.0-only](https://img.shields.io/badge/licence-GPL--3.0--only-blue.svg)](LICENSE)
 
-SHUTTLE runs two `llama-server` instances under rootless Podman on a network
-without egress, so that a planning agent can hand bulk text work to a model on
-your own machine. The name expands to *SHUTTLE Hauls Unwieldy Text To Local
-Engines*.
+**Your coding agent burns its context reading long files. SHUTTLE puts a
+model on your own machine to do that reading, and hands back only the
+answer.**
+
+Ask it about a 60 KB installer and it returns the answer with the lines it
+rests on, for 468 tokens of your agent's context instead of 12844. The
+reading happens in `llama-server` on a container network with no route out,
+so nothing leaves the machine. The name expands to *SHUTTLE Hauls Unwieldy
+Text To Local Engines*.
+
+```
+                   your agent                      your machine
+   "what does the  ┌───────────────┐  path + a    ┌──────────────────┐
+    models phase   │               │  pattern     │  shuttle-long    │
+    check?"   ───► │  decides what ├─────────────►│  Qwen3-8B        │
+                   │  it needs     │              │  reads 60 KB     │
+   the answer  ◄───┤               │◄─────────────┤  on the GPU      │
+   + its quotes    └───────────────┘  the answer  └──────────────────┘
+   468 tokens                        and nothing   no network out
+                                      else
+```
+
+### What it is
+
+A local-inference layer you install once and then forget: two
+`llama-server` instances under rootless Podman, and an MCP server in front of
+them that an agent calls with a path. It reads PDFs, datasheets, synthesis
+logs and source in fourteen languages, indexes them so you can ask questions
+no pattern would find, and answers with a citation every time.
+
+Every answer carries the quotations it rests on and a count of any that are
+**not** in the file, because a saving bought with a wrong answer is not a
+saving.
+
+### What it is not
+
+- **Not a replacement for your agent.** It does the reading; the judgement
+  stays where it was. The bounded agents it can run all refuse to start
+  without something that can tell them they are wrong.
+- **Not a cloud service.** Nothing is sent anywhere. The container network
+  has no egress and an `install.sh audit` phase proves it with two probes.
+- **Not vendor software.** No Xilinx, Altera or Siemens knowledge in the
+  code. What is vendor-specific enters through your own configuration.
+- **Not finished.** The roadmap below says which milestones are measured and
+  which are open, with the numbers either way.
+
+### Contents
+
+| | |
+|---|---|
+| [Quick start](#quick-start) | what you get, whether it runs here, and the first thing to try |
+| [Requirements](#requirements) | the short list |
+| [How it works](#how-it-works) | the two servers, the network, the installer |
+| [Delegating to SHUTTLE](#delegating-to-shuttle) | every tool, what it costs and where it fails |
+| [Verification](#verification-and-benchmarks) | how often it is right, measured |
+| [Troubleshooting](#troubleshooting) | the failures seen on real machines |
+| [Roadmap](#roadmap) | what is done, with its numbers |
+| [Agents](#agents-and-the-one-rule-they-are-built-around) | the loops, and the rule they are built around |
 
 ## Status
 
@@ -106,18 +160,100 @@ does, it does well.
 
 ## Quick start
 
+### What you get
+
+An agent that would have read a 12844-token file to answer a question about
+it asks ten narrow questions instead and spends 468 tokens of its own
+context. The reading happens on your machine, in your own `llama-server`, on
+a container network with no route out.
+
+```
+reading install.sh to answer it     12844 tokens of your context
+ten answers through ask_file          468 tokens of your context
+saved                               12376 tokens (97%)
+spent locally instead                2557 tokens
+```
+
+Those are measurements from the reference machine and `python -m
+evals.reduction` repeats them on yours.
+
+### Will it run here
+
+| | |
+|---|---|
+| Arch Linux, or Ubuntu 24.04 or newer | the installer knows two distributions |
+| Podman 4.9+, rootless | the installer adds it, the subuid ranges and linger if absent |
+| `bash` 5, `curl`, `jq` | all `install.sh` needs; it is shell and no Python |
+| `uv` | for the delegate, which is Python. `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| 13 GB of disk | 7.0 GiB of models, 5.2 GB of images |
+| An NVIDIA GPU | optional. Without one both servers run on the CPU, slower |
+
+It refuses to run as root, and every command that needs `sudo` is shown and
+waits for you.
+
+### Install
+
 ```
 git clone https://github.com/FPGArtktic/shuttle-stack && cd shuttle-stack
-./install.sh detect plan --dry-run
-./install.sh
+./install.sh detect plan --dry-run      # says what it would do, changes nothing
+./install.sh                            # does it, asking before each sudo
 ```
 
-The first command brings the repository. The second reports what the installer
-found and what it intends to do, changing nothing. The third runs every phase
-except `bench`, asking before each command that needs root.
+The dry run is worth reading: it prints the VRAM arithmetic it used to decide
+how many layers go on your card, and the file differences it would write.
 
-The last phase installs the delegate; telling an MCP client about it is a
-separate step, described under *Delegating* below.
+### Check it worked
+
+```
+./install.sh status
+```
+
+```
+unit     shuttle-long           active
+health   shuttle-long           ok
+health   shuttle-fast           ok
+model    Qwen3-8B-Q4_K_M.gguf   4.6 GiB
+bench    shuttle-long 2048 tok: pp 631.9 tg 18.5 tok/s
+```
+
+Two `ok` lines are the thing to look for. `./install.sh bench` adds the
+numbers for your own hardware.
+
+### Give it to an agent
+
+The repository ships the registration, so from a client that reads
+`.mcp.json` — Claude Code among them — there is nothing to write:
+
+```json
+{ "mcpServers": { "shuttle": {
+    "command": "shuttle-delegate", "args": ["--transport", "stdio"] } } }
+```
+
+Then tell the agent when to reach for it, which matters more than the
+registration does: *a file above about 50 KB goes through `ask_file` with a
+`pattern`, never through a plain read.* The wording that works, and why a
+pattern changes the price by a factor of thirty, is under *Teaching a client
+when to reach for it* below.
+
+### The first thing worth trying
+
+```
+ask_file  path=./install.sh  question="what does the models phase check before downloading"
+          pattern="^phase_models" until="^[a-z_]+\(\)"
+```
+
+The `pattern` and `until` are the whole trick: they hand the local model one
+function instead of a 60 KB script, which is 408 tokens and three seconds
+rather than 13079 and twenty-two. Every answer comes back with the quotations
+it rests on, and a count of any that were not in the file — because a saving
+bought with a wrong answer is not a saving.
+
+### When it goes wrong
+
+`./install.sh --help` lists every phase and flag, and each phase runs on its
+own: `./install.sh models` to fetch only the weights, `./install.sh quadlets`
+to rewrite the units. *Troubleshooting* below has the failures seen on real
+machines, with what each one actually means.
 
 ## How it works
 
@@ -1327,14 +1463,37 @@ alongside from M2. M8 is independent of all of it.
   register table comes out of a datasheet as valid JSON with the values the
   page does not contain named rather than returned. The digestion the plan
   asks for was overnight work and arrived with M6.
-- **M4 — isolation and hardening.** Partly done: `install.sh audit` proves
-  there is no egress, the audit log rotates, and `shuttle-backup` writes the
-  index and the transcripts into one archive. The remaining two parts need a
-  decision rather than code. The milestone's criterion is that only the
-  delegate on 127.0.0.1 with a token is reachable, and the delegate reaches
-  the servers through those same loopback ports from the host, so closing
-  them would cut it off; the token assumes an HTTP delegate where this one
-  speaks stdio, on which a bearer token means nothing.
+- **M4 — isolation and hardening.** Done as far as it can be, and the rest
+  is a departure from the plan rather than work outstanding. In: `install.sh
+  audit` proves there is no egress with two probes and reports what each
+  server publishes, the audit log rotates at eight megabytes with four
+  generations kept, and `shuttle-backup` writes the index and the transcripts
+  into one archive with the index copied through SQLite rather than byte for
+  byte.
+
+  **The criterion as written cannot be met, and the reason is the delegate's
+  own design.** It asks that only the delegate on 127.0.0.1, behind a token,
+  be reachable from the host. Two parts of that do not hold here.
+
+  The delegate runs on the host under `uv`, which is deliberate — the
+  installer is shell so it can run before anything is set up, and the
+  delegate is a separate program with separate needs. A host process reaches
+  a rootless Podman container only through a published port, so closing
+  8081 and 8082 would cut the delegate off from the servers it exists to
+  call. The alternative is a delegate inside the internal network, which
+  means it is no longer a host process, and that was weighed and declined.
+  `--no-expose-direct` is there for anyone who chooses the other way.
+
+  The token is worse than unmet: it is meaningless. The delegate speaks MCP
+  over stdio, a pipe the client spawns. There is no header to carry a bearer
+  token and no listener to check one. A token here would be a field nobody
+  reads, which is the kind of security this project would rather not claim.
+
+  What the loopback ports do get is the audit's attention: the phase reports
+  which addresses each server publishes, so a port bound wider than
+  127.0.0.1 is something you are told about rather than something you
+  discover.
+
 - **M5 — code graphs and constrained agents.** Done: the graph, the two-hop
   expansion, the scout, the bounded loop and all six presets the design
   names. All three criteria are met on this machine — `repo-scout` answers
