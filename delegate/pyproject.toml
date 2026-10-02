@@ -15,12 +15,25 @@ dependencies = ["mcp>=2.2", "sqlite-vec>=0.1.9"]
 
 [dependency-groups]
 dev = ["mypy>=1.18"]
+# M7's training end, and nothing the stack runs touches it: the
+# delegate stays four dependencies deep and `uv sync` stays small,
+# because these five are gigabytes and only `shuttle-train` imports
+# them -- lazily, inside the one function that needs a card.
+train = [
+  "accelerate>=1.0",
+  "bitsandbytes>=0.45",
+  "datasets>=3.0",
+  "peft>=0.14",
+  "torch>=2.5",
+  "transformers>=4.48",
+]
 
 [project.scripts]
 shuttle-delegate = "shuttle_delegate.__main__:main"
 shuttle-sweep = "shuttle_delegate.sweep:main"
 shuttle-backup = "shuttle_delegate.backup:main"
 shuttle-dataset = "shuttle_delegate.dataset:main"
+shuttle-train = "shuttle_delegate.train:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -37,6 +50,32 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "RET", "C4"]
 
 [tool.mypy]
 strict = true
+
+# The training dependencies are an optional group, so a checkout that
+# has not installed them is the normal case and not an error.
+[[tool.mypy.overrides]]
+module = [
+  "accelerate.*",
+  "bitsandbytes.*",
+  "datasets.*",
+  "huggingface_hub.*",
+  "peft.*",
+  "torch.*",
+  "transformers.*",
+]
+ignore_missing_imports = true
+
+# And the one module that imports them cannot satisfy strict mypy in
+# both states at once: installed, three of their calls are untyped
+# and need an ignore; absent, the same ignores are unused and strict
+# mypy says so.  An ignore that is needed in one installation and
+# redundant in another is what an optional dependency looks like, so
+# this module alone does not warn about the redundant ones.  CI runs
+# without the group and a developer who installed it runs with it;
+# both have to pass.
+[[tool.mypy.overrides]]
+module = ["shuttle_delegate.train"]
+warn_unused_ignores = false
 
 # sqlite-vec ships no py.typed marker, so the one call into it is
 # ignored at the import rather than everywhere it is used.
