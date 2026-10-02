@@ -31,5 +31,13 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           sha256sum install.sh > SHA256SUMS
+          # A tag with a hyphen is a candidate -- v1.0.0-rc1 and the
+          # like.  Without this it publishes as a full release and
+          # moves releases/latest onto it, so a candidate would
+          # present itself as the version to install.
+          case "$TAG" in
+          *-*) pre=--prerelease ;;
+          *)   pre= ;;
+          esac
           gh release create "$TAG" install.sh SHA256SUMS \
-            --verify-tag --generate-notes
+            --verify-tag --generate-notes $pre

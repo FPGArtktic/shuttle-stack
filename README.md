@@ -7,6 +7,36 @@
 [![latest tag](https://img.shields.io/github/v/tag/FPGArtktic/shuttle-stack)](https://github.com/FPGArtktic/shuttle-stack/tags)
 [![licence: GPL-3.0-only](https://img.shields.io/badge/licence-GPL--3.0--only-blue.svg)](LICENSE)
 
+> ### v1.0.0-rc1 is out — and it would like to be broken
+>
+> Six of the nine milestones are closed against their own acceptance
+> numbers: the inference layer, the delegate, the measured behaviour, the
+> documents and code, the isolation, and the graphs and bounded agents.
+> Every number in this file was taken on one laptop with a 4 GB card, and
+> `python -m evals.run --server both` and `python -m evals.reduction` take
+> them again on yours.
+>
+> ```
+> git clone https://github.com/FPGArtktic/shuttle-stack && cd shuttle-stack
+> ./install.sh detect plan --dry-run     # changes nothing, prints its reasoning
+> ./install.sh
+> ```
+>
+> **What a candidate means here.** The three open milestones are open for
+> reasons code cannot close: five mornings of calendar, a second machine,
+> and enough graded answers to train on. The [roadmap](#roadmap) says which
+> is which, with the numbers either way — including the one that came back
+> zero. Nothing is marked done on the strength of the code being written.
+>
+> If it breaks on your distribution, your card or your documents, that is
+> the report worth having. [Open an
+> issue](https://github.com/FPGArtktic/shuttle-stack/issues) with what
+> `./install.sh status` says and the phase that failed.
+>
+> Each release carries `install.sh` and its `SHA256SUMS` so a fixed version
+> can be verified before it runs; the installer needs the rest of the
+> repository beside it, so the clone above is the way in.
+
 **Your coding agent burns its context reading long files. SHUTTLE puts a
 model on your own machine to do that reading, and hands back only the
 answer.**
