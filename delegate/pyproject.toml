@@ -6,6 +6,7 @@ version = "0.1.0"
 description = "MCP server that hands bulk text work to local llama-servers"
 requires-python = ">=3.11"
 license = "GPL-3.0-only"
+authors = [{ name = "Mateusz Okulanis", email = "FPGArtktic@outlook.com" }]
 # sqlite-vec ships the loadable extension that puts the vector half
 # of the index in the same file as the lexical half.  The guidelines
 # ask for a reason beyond the standard library: the alternative is a

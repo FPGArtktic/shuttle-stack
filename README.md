@@ -1872,6 +1872,16 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md). It follows the Linux kernel's process
 documents, and lists the coding style, the commit format and the tests that
 gate every change.
 
+## Author
+
+Mateusz Okulanis.
+
+The design decisions, the acceptance criteria and the hardware this was
+measured on are his; the numbers in this file come from that machine and the
+roadmap says which of them are still missing.
+
 ## License
 
 GPL-3.0-only. See [LICENSE](LICENSE).
+
+Copyright (C) 2026 Mateusz Okulanis.
