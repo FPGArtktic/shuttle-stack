@@ -309,7 +309,7 @@ and the instructions repeat it.
 | `brainstorm` | a request, optionally a path | several options, marked unverified |
 | `index_path` | path, heading | for a document, how many sections and whether by heading or page; for source, the language, the units and how they were cut |
 | `search_docs` | a question, limit, file | a few sections with file, page and heading, under 300 tokens; a file keeps the search inside that document and adds what sections it has |
-| `search_code` | a question, limit | a few units with file and line range, under 300 tokens |
+| `search_code` | a question, limit, file | a few units with file and line range, under 300 tokens; a file keeps the search inside it and adds what units it holds |
 | `find_references` | a name, a relation, limit | every file:line that names it, with no model asked |
 | `expand_symbol` | a name, hops, limit | where it is defined with the head of the definition, who names it, and what those places reach, each as file:line |
 | `agent_start` | a task, a preset | the report, which budget stopped it, and the directory holding every step |
@@ -637,6 +637,18 @@ and `mod` and calls in Rust, `import` and calls in Go, `source` in shell and
 Tcl. Every variable assignment is an edge too, not only the dependency
 lists, because "which layer overrides this" needs the variables nobody
 thought to enumerate.
+
+Either shelf can be asked of one file instead of the whole index, and the
+reason is a failure worth seeing. Asked `what debounces the button input`
+over an index holding a counter example and a Yocto layer, the three hits
+are `debouncer.sv`, `xen-tools.inc` and a testbench: the question was about
+one design and two thirds of the answer came from somewhere else. Narrowed,
+every hit is from the named file, the reply says so, and it also says what
+units that file holds — because a ranking answers which unit fits the
+question and not what is in the file. The lexical half takes a condition on
+the file; the semantic half ranks that file's own vectors, because vec0
+takes no condition and cutting the top k of the whole shelf would lose a
+unit that is nearest within its own file and far down the index.
 
 A name matches whatever follows it after a separator, which is one rule for
 four languages: `RDEPENDS` finds `RDEPENDS:${PN}`, `std` finds
