@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: GPL-3.0-only -->
+<!-- Copyright (C) 2026 Mateusz Okulanis -->
 # Example Quadlet units
 
 `install.sh quadlets` writes the real units into

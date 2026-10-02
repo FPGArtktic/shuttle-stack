@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """The MCP surface: argument checking, wording, and nothing else."""
 
 from __future__ import annotations

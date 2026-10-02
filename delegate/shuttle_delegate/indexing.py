@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """One SQLite file holding the index: BM25 beside the vectors.
 
 The point is a citation. A section is stored with the file, the page

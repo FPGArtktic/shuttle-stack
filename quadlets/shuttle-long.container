@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 # Example only: install.sh quadlets writes the real unit.
 [Unit]
 Description=SHUTTLE long llama-server

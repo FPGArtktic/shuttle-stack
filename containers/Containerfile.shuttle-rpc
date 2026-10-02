@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 #
 # llama.cpp with RPC compiled in, which no official image has.  Both
 # halves are missing from them: `ghcr.io/ggml-org/llama.cpp:server`

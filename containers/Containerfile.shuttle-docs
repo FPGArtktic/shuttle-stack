@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 #
 # Everything needed to get text out of a PDF and units out of source,
 # and nothing else.  The container is run with --network=none and only

@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 #
 # The checks a contributor runs locally, repeated on GitHub's Ubuntu 24.04
 # runner.  The runner has no NVIDIA GPU and no user systemd session, so

@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """What a document and its sections are about, written down once.
 
 A search hit from a datasheet is often unreadable: the page is a

@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """The log that records every call, and how it is kept from growing."""
 
 from __future__ import annotations

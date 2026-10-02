@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """The archive: what goes in, what stays out, and that it opens."""
 
 from __future__ import annotations

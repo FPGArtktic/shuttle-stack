@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """The llama-server HTTP API, narrowed to what the tools need."""
 
 from __future__ import annotations

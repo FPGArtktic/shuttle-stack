@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """Sectioning, citation, fusion and the token budget.
 
 The index is a file, so these run against a real one in a temporary

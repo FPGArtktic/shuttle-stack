@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """Climbing from one profile to the next, and stopping out loud."""
 
 from __future__ import annotations

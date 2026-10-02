@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """Whether starting on the small server pays, on this machine.
 
 A cascade asks the cheap profile first and climbs only when the answer

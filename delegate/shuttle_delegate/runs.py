@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """Where the whole output goes, and how little of it comes back.
 
 The project's overriding rule: the caller sees a report under a hard

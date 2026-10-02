@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """Section labels and document labels, against a real index file."""
 
 from __future__ import annotations

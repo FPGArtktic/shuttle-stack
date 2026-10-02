@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """The work itself, once a backend is in hand.
 
 Every task takes text that has already been read from disk and returns

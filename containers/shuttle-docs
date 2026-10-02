@@ -1,5 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 #
 # The container's one entry point.  A verb from a closed set and a path:
 # the path is data and is never run, and a verb that is not in the list

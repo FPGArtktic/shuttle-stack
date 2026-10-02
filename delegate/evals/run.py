@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """Run the evaluation cases against a live stack.
 
 Five hand-picked examples tell you what a model can do on a good day.

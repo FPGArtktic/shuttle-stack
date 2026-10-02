@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """QLoRA on the graded set, on the card this machine has.
 
 M7 wants an adapter trained on what Claude made of the local model's

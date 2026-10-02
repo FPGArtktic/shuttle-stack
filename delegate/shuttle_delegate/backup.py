@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """One archive holding the index, the sessions and the audit log.
 
 The index being a single file is the reason it can be backed up at

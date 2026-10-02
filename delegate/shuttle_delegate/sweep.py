@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """The overnight pass: index what is new, and leave a report.
 
 A document dropped into a watched directory in the evening should be

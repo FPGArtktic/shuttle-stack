@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """Narrowing a file before a model ever sees it."""
 
 from __future__ import annotations

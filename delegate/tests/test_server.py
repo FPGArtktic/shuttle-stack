@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """The MCP surface: what a client sees before it calls anything."""
 
 from __future__ import annotations

@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """The documents a night leaves in a server's cache.
 
 Reading a document is the expensive part of asking about it, and a

@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """Work that outlives the call that asked for it.
 
 Durations and the pruning order come from a monotonic clock: with the

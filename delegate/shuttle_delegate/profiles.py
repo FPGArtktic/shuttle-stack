@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """Named settings for a delegation: where it goes and how it is read.
 
 A profile names one way of asking: which server answers, how the

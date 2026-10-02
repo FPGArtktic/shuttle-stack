@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """Finding the part of a file worth asking about.
 
 Locating a passage is work for a regular expression rather than for a

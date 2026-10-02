@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """Source cut into the units an engineer would name it by.
 
 A file is not a useful unit of retrieval and a fixed window is worse:

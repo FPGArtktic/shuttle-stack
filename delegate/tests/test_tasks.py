@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """The task logic, against a backend that answers from this process."""
 
 from __future__ import annotations

@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 #
 # A release is a tag v* on a commit that passes the smoke test.  It
 # carries install.sh and its sha256, so a machine can install a fixed,

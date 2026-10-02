@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """The golden set with an adapter and without it, on one server.
 
 M7 asks whether a LoRA beats the base by a measurable margin, which

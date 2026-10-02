@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """The answer cache: what it serves, and what it refuses to.
 
 The embedding is replaced by one that puts a vector on an axis per

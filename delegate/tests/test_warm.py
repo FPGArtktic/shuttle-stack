@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """Which documents a night holds, and what it lets go of.
 
 No server is started. The sessions module is where opening and

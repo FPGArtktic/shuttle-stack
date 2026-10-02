@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 #
 # Builds a throwaway environment for the delegate and runs its tests.
 # Nothing here talks to a llama-server, so it runs in CI as it does on a

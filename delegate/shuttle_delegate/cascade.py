@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """Trying one server, then another, and then giving up out loud.
 
 A verifier that can say an answer failed can also say when to try

@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """One line per call, so that what was sent where is answerable.
 
 The log is the record the project asks for before any isolation work:

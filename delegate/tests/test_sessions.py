@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """A document read once, asked many times, and changed underneath."""
 
 from __future__ import annotations

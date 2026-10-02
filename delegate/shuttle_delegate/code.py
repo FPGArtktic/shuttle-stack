@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """Source indexed by the units the language defines.
 
 A file is not a useful answer and a fixed window is worse: half a

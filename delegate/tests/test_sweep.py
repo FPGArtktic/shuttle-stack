@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """The overnight pass: what it looks at, remembers and reports."""
 
 from __future__ import annotations

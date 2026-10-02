@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """What delegating one real task saves, counted rather than claimed.
 
 The task: one sentence on what each phase of install.sh does. Done

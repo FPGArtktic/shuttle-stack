@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """Cutting a file into pieces that fit a context.
 
 The cuts are made at the largest boundary that works: blank lines

@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """The loop: what bounds it, what verifies it, what it refuses.
 
 The server is a fake that returns a scripted sequence of tool calls,

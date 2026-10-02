@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """What Claude thought of a local answer, and the set that makes.
 
 M7 trains an adapter on triples of input, local output and Claude's

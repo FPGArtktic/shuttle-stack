@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """Checking that a quotation is really in the source.
 
 A model that cites a line it invented is worse than one that refuses,

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 #
 # Checks a range of commits against CONTRIBUTING.md.  Each commit is also
 # built in a scratch worktree and must pass tests/smoke.sh, so that

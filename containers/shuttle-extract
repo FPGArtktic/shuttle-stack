@@ -1,5 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 #
 # Page by page text out of a PDF, the text layer first and OCR only for
 # the pages that have none.  Prints one JSON object on stdout.  Runs

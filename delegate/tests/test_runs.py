@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """The hard limit on what comes back, and the file holding the rest."""
 
 from __future__ import annotations

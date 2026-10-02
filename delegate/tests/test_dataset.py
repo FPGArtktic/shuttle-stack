@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """Grades, and the set they make: the half of M7 that is not training."""
 
 from __future__ import annotations

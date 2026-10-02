@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """A question asked again, answered without a model.
 
 `ask_file` is the expensive tool: the server reads the file, answers,

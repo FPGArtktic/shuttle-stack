@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """What goes into the adapter, and what is kept out of it.
 
 Nothing here loads torch. The training call is the one part of the

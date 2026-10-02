@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """A bounded loop: the model asks for tools until something verifies.
 
 The rule the design puts above everything else here is that a local

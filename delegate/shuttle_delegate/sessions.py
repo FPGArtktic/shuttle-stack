@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """A document read once and asked about many times.
 
 The transcript is the source of truth and the KV dump is only a cache.

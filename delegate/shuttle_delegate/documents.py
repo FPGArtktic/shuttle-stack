@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """Text out of a PDF, through a container that can do nothing else.
 
 The extraction runs in `shuttle-docs` with `--network=none` and only

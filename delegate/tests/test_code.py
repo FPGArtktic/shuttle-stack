@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """Source units: what is stored, what is cited, what is found.
 
 The chunker itself runs in the container and is not started here; what

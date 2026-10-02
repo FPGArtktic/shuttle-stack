@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 #
 # SHUTTLE M0 installer: two llama-server instances in rootless Podman, run
 # by Quadlet on an internal network without egress.  See --help.

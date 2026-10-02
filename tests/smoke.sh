@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 #
 # Checks every commit must pass.  They need neither a GPU nor root: the
 # phases run here only read the system.

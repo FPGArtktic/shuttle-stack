@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
 """The HTTP client, against a server that answers from this process."""
 
 from __future__ import annotations
