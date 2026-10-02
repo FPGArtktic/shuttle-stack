@@ -87,13 +87,19 @@ does, it does well.
 - Arch Linux, or Ubuntu 24.04 or newer.
 - Podman 4.9 or newer, rootless, on cgroup v2. The installer adds the package,
   the subuid and subgid ranges and `loginctl enable-linger` if they are absent.
-- `bash` 5, `curl` and `jq`. No Python on the host.
+- `bash` 5, `curl` and `jq` — that is the whole of what `install.sh` needs,
+  and it needs no Python. The rule is about the installer: it has to run on a
+  machine before anything is set up, so it is shell and nothing else.
 - A regular user account. The installer refuses to run as root.
 - An NVIDIA GPU is optional. With one, `shuttle-long` offloads as many layers
   as the VRAM budget allows through CDI, which needs
   `nvidia-container-toolkit`; without one, both servers run on the CPU.
-- `uv`, for the delegate only. Nothing the stack runs needs it, and the
-  installer does not fetch it: `curl -LsSf https://astral.sh/uv/install.sh | sh`.
+- `uv`, for the delegate, which is Python and runs on the host rather than in
+  a container. So the host does end up with a Python — `uv` fetches its own
+  interpreter and keeps it with the project, so there is no system Python to
+  install or keep working. Nothing the stack itself runs needs either, and
+  the installer does not fetch `uv`:
+  `curl -LsSf https://astral.sh/uv/install.sh | sh`.
 - Disk: **7.0 GiB** for the three GGUF files and **5.2 GB** for the two
   container images, so about **12.5 GB** in total. The `models` phase refuses
   to start a download that would leave under 1 GiB free.
