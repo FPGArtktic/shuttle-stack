@@ -380,21 +380,42 @@ BUILT_IN: dict[str, Preset] = {
     ),
     # Answers from the documents, with the citation checked against
     # the sections it was shown.
+    # The quotation is grounded and the citation is not. One field
+    # for both refused every correct answer: asked to quote the
+    # sentence and name the file and page, the model put
+    # `counter.sta.rpt, page 0, section 6. ...` in it -- a reference,
+    # which is assembled out of the hit's fields and so appears
+    # verbatim in no document. Same shape as log-triage's `first`.
     "doc-qa": Preset(
         name="doc-qa",
-        tools=("search_docs", "finish"),
-        task="Answer the question from the indexed documents. Quote "
-        "the sentence you answered from, in double quotes, and name "
-        "the file and page it came from.",
+        # read_section, because a search excerpt is the size for
+        # choosing where to look and not for reading. Measured: the
+        # 300-token budget divided across three hits gave this preset
+        # `; Fmax ; Restricted Fmax ; Clock Name ; N` -- the table's
+        # header row, cut before the row holding 154.23 MHz -- and it
+        # answered, correctly about what it had been given, that the
+        # report does not state the Fmax. A cut across an ASCII table
+        # leaves the labels and takes the numbers.
+        tools=("search_docs", "read_section", "finish"),
+        task="Answer the question from the indexed documents. Search "
+        "for the section that holds the answer, read it with "
+        "read_section rather than trusting the excerpt, and put the "
+        "words you answered from under 'quote', copied exactly, with "
+        "the file and page under 'cited'.",
         schema={
             "type": "object",
             "properties": {
                 "answer": {"type": "string"},
+                # Long enough to be a quotation. Grounding skips a
+                # string under six characters as the model's reading
+                # rather than a span of text, so `"quote": "Fmax"`
+                # passed the check and carried a wrong answer with it.
+                "quote": {"type": "string", "minLength": 24},
                 "cited": {"type": "string"},
             },
-            "required": ["answer", "cited"],
+            "required": ["answer", "quote", "cited"],
         },
-        ground=("cited",),
+        ground=("quote",),
         max_steps=8,
     ),
     # Fields out of a document, as a loop rather than in one shot.
@@ -799,10 +820,12 @@ def _too_few(schema: dict[str, Any], report: dict[str, Any]) -> list[str]:
         if not isinstance(rule, dict) or key not in report:
             continue
         held = report[key]
-        least = rule.get("minProperties", rule.get("minItems"))
+        least = rule.get(
+            "minProperties", rule.get("minItems", rule.get("minLength"))
+        )
         if not isinstance(least, int):
             continue
-        if isinstance(held, dict | list) and len(held) < least:
+        if isinstance(held, dict | list | str) and len(held) < least:
             out.append(key)
     return out
 
@@ -936,7 +959,9 @@ def start(
     # What the tools have said, for the grounding check: a report may
     # only name what a tool returned, and this is that record.
     shown: list[str] = []
-    asked: dict[tuple[str, str], int] = {}
+    # What each lookup answered, so that asking it again costs a
+    # model turn and nothing else.
+    answered: dict[tuple[str, str], str] = {}
     # The last failing call, to notice a loop that cannot move.
     stuck: tuple[str, str] = ("", "")
     repeats = 0
@@ -1014,38 +1039,26 @@ def start(
                 call.name,
                 json.dumps(call.arguments, sort_keys=True, default=str),
             )
-            # The repeat detector counted failures only, so `ok` reset
-            # it and a model asking a succeeding tool the same thing
-            # forever was never caught. Measured: doc-compare over two
-            # corners of a timing report called search_docs with
-            # identical arguments seven times in a row, every one
+            # A lookup asked the same thing twice is served from what
+            # it answered before, unperformed and said so. The cost
+            # was the problem and not the repetition: doc-compare
+            # over two corners of a timing report called search_docs
+            # with identical arguments seven times, every one
             # successful, and spent all twelve steps and 206 seconds
-            # on it. The third identical lookup ends the run instead,
-            # and says which tool it was.
-            if call.name not in STATEFUL:
-                asked[same] = asked.get(same, 0) + 1
-                if asked[same] > MAX_REPEATS:
-                    run.stopped = (
-                        f"{call.name} was asked the same thing "
-                        f"{asked[same]} times; the loop is not moving"
-                    )
-                    # Written down as a step, refused, so the
-                    # transcript holds as many calls as the reason
-                    # counts. The call is not performed.
-                    _record(
-                        run,
-                        Step(
-                            len(run.steps) + 1,
-                            call.name,
-                            call.arguments,
-                            run.stopped,
-                            round(time.monotonic() - at, 1),
-                            False,
-                        ),
-                        transcript,
-                    )
-                    return _close(run, transcript)
-            if call.broken:
+            # on it. Ending the run on the third instead broke a
+            # preset that was about to succeed -- doc-qa holds only
+            # search_docs and finish, so asking again is its one way
+            # to think again, and it died in three steps with the
+            # answer already in hand. A repeat is now free, and the
+            # step budget does the bounding it is there for.
+            repeat = call.name not in STATEFUL and same in answered
+            if repeat:
+                said, ok = (
+                    "the same call as before, so this is the answer it "
+                    "gave; nothing has changed since.\n" + answered[same],
+                    True,
+                )
+            elif call.broken:
                 said, ok = call.broken, False
             elif call.name == "finish":
                 report = call.arguments.get("report") or {}
@@ -1082,6 +1095,8 @@ def start(
                 said, ok = _perform(call, run, preset, server)
                 if ok:
                     shown.append(said)
+                    if call.name not in STATEFUL:
+                        answered[same] = said
             if ok:
                 stuck, repeats = ("", ""), 0
             elif same == stuck:

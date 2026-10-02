@@ -199,6 +199,29 @@ class LoopTest(unittest.TestCase):
             any("nothing under fields" in one for one in run.checks)
         )
 
+    def test_a_quote_too_short_to_check_is_refused(self) -> None:
+        """Grounding skips a string under six characters as the
+        model's reading rather than a span of text, so a four-letter
+        quote passed the check and carried a wrong answer with it."""
+        preset = Preset(
+            name="x",
+            tools=("finish",),
+            schema={
+                "type": "object",
+                "properties": {"quote": {"type": "string", "minLength": 24}},
+                "required": ["quote"],
+            },
+            ground=("quote",),
+        )
+        run = self.run_with(
+            preset,
+            *[[call("finish", report={"quote": "Fmax"})] for _ in range(4)],
+        )
+        self.assertFalse(run.verified)
+        self.assertTrue(
+            any("nothing under quote" in one for one in run.checks)
+        )
+
     def test_an_empty_list_is_refused_the_same_way(self) -> None:
         preset = Preset(
             name="x",
@@ -252,11 +275,39 @@ class LoopTest(unittest.TestCase):
         run = self.run_with(preset, "a", "b", "c", "d", "e")
         self.assertIn("token budget", run.stopped)
 
-    def test_asking_a_lookup_the_same_thing_stops_it(self) -> None:
-        """Measured: a succeeding tool called with identical arguments
-        seven times, because the detector only counted failures."""
+    def test_a_repeated_lookup_is_served_from_what_it_answered(
+        self,
+    ) -> None:
+        """Measured twice. A succeeding tool asked the same thing
+        seven times went unseen because the detector counted failures
+        only; ending the run on the third instead killed doc-qa, whose
+        two tools make asking again its one way to think again."""
         preset = Preset(
             name="x", tools=("search_docs", "finish"), schema=SHAPED
+        )
+        with mock.patch.object(
+            indexing, "search", return_value={"hits": ["a section"]}
+        ) as searched:
+            run = self.run_with(
+                preset,
+                [call("search_docs", question="same")],
+                [call("search_docs", question="same")],
+                [call("search_docs", question="same")],
+                [call("finish", report={"answer": "a"})],
+            )
+        self.assertTrue(run.verified, run.checks)
+        self.assertEqual(searched.call_count, 1)
+        self.assertIn("the same call as before", run.steps[1].answer)
+        self.assertIn("a section", run.steps[1].answer)
+        self.assertTrue(run.steps[1].ok)
+
+    def test_a_loop_that_only_repeats_runs_out_of_steps(self) -> None:
+        """The budget does the bounding, which is what it is for."""
+        preset = Preset(
+            name="x",
+            tools=("search_docs", "finish"),
+            schema=SHAPED,
+            max_steps=4,
         )
         with mock.patch.object(
             indexing, "search", return_value={"hits": []}
@@ -265,11 +316,8 @@ class LoopTest(unittest.TestCase):
                 preset,
                 *[[call("search_docs", question="same")] for _ in range(6)],
             )
-        self.assertIn("asked the same thing", run.stopped)
-        self.assertEqual(searched.call_count, 2)
-        # As many calls in the transcript as the reason counts.
-        self.assertEqual(len(run.steps), 3)
-        self.assertFalse(run.steps[-1].ok)
+        self.assertIn("step budget", run.stopped)
+        self.assertEqual(searched.call_count, 1)
 
     def test_a_different_question_is_not_a_repeat(self) -> None:
         preset = Preset(
@@ -286,8 +334,9 @@ class LoopTest(unittest.TestCase):
         self.assertTrue(run.verified)
 
     def test_the_verifier_may_be_run_again_after_a_write(self) -> None:
-        """It takes no arguments, so every call looks identical; that
-        is the shape of verify-loop and not a loop going nowhere."""
+        """It takes no arguments, so every call looks identical, and
+        its answer depends on what the run has written since: it is
+        never served from the one before."""
         preset = Preset(
             name="x",
             tools=("write_file", "run_verifier", "finish"),
@@ -542,8 +591,10 @@ class BuiltInTest(unittest.TestCase):
     def test_a_preset_that_reads_documents_can_read_one_whole(
         self,
     ) -> None:
-        """search_docs excerpts; a field or an error line needs more."""
-        for name in ("doc-extract", "doc-compare", "log-triage"):
+        """search_docs excerpts; a field, an error line or a quotation
+        needs more. doc-qa had only the excerpt and answered that a
+        report does not state a number the excerpt was cut before."""
+        for name in ("doc-extract", "doc-compare", "log-triage", "doc-qa"):
             with self.subTest(preset=name):
                 self.assertIn("read_section", agent.BUILT_IN[name].tools)
 
@@ -552,10 +603,14 @@ class BuiltInTest(unittest.TestCase):
         verbatim, which refuses a run that read the right values."""
         # `first` is here because it is only sometimes a quotation:
         # on a log with nothing wrong there is no line to put in it.
+        # `cited` is here with the prose: a citation is assembled out
+        # of a hit's fields and appears verbatim in no document, so
+        # grounding it refused every correct answer doc-qa gave.
         prose = {
             "about",
             "advice",
             "answer",
+            "cited",
             "first",
             "summary",
             "verdict",
@@ -563,6 +618,14 @@ class BuiltInTest(unittest.TestCase):
         for name, one in agent.BUILT_IN.items():
             with self.subTest(preset=name):
                 self.assertEqual(set(one.ground) & prose, set())
+
+    def test_every_preset_grounds_something(self) -> None:
+        """A preset with a verifier that checks nothing is the hole
+        this project keeps finding, so each one grounds a field or
+        runs a command."""
+        for name, one in agent.BUILT_IN.items():
+            with self.subTest(preset=name):
+                self.assertTrue(one.ground or one.verifier, name)
 
     def test_a_triage_verdict_is_held_to_three_answers(self) -> None:
         described = agent.describe(agent.BUILT_IN["log-triage"])
