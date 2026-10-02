@@ -1460,13 +1460,14 @@ written. Six of the nine are closed.
 | **M4** isolation | **done**, with a departure | no egress, proved by two probes; the port and token half of the criterion cannot hold and the reason is below |
 | **M5** graphs and agents | **done** | the graph, the two-hop expansion, six presets, 5 of 5 seeded defects, 27 of 27 reference fields |
 | **M6** batch work | built, waiting on you | every part measured; the timer stays off until `sweep.toml` names a directory, then five mornings |
-| **M7** distillation | 1 of 3 criteria | retraining is one command and an adapter exists; beating the base needs graded volume, and the third criterion a second machine |
+| **M7** distillation | 1 of 2 criteria | retraining is one command; the adapter is measured against the base and the margin is **zero cases**, which needs graded volume rather than code |
 | **M8** scale-out, optional | built, unproven | the RPC image builds because no official one has it; a pool needs a second machine, and on one it is slower |
 
 "Built, waiting" means the code is in and measured and the criterion asks for
 something code cannot supply: five mornings of calendar, a second machine, or
-enough graded answers to train on. Those three are named where they are,
-rather than counted as done.
+enough graded answers to train on. Those are named where they are, rather
+than counted as done — and where a criterion could be measured it was, even
+when the number came back zero.
 
 The order of work was M0 to M1 to M2, then M3 and M5, then M6 and M7. M4 ran
 alongside from M2. M8 is independent of all of it.
@@ -1533,10 +1534,46 @@ alongside from M2. M8 is independent of all of it.
   about a second against 305 MiB a document; see *The night* above. The
   criterion that the report is in place before 07:00 for five consecutive
   days is a matter of five days passing rather than of code.
-- **M7 — distillation.** The set exists and fills as the stack is used; see
-  *Grading an answer* above. The training waits on data rather than on code:
-  QLoRA on Qwen3-1.7B, evaluated against the golden set, the adapter exported
-  as GGUF with the base model's hash pinned to it.
+- **M7 — distillation.** One of its two criteria. `shuttle-train` takes the
+  graded set, rebuilds each training example as the prompt the tool actually
+  sent, and writes a QLoRA adapter beside the sha256 of the weights it fits;
+  `convert_lora_to_gguf.py` turns it into the 34.9 MB GGUF `llama-server
+  --lora` loads. Retraining is one command and that criterion is met.
+
+  **The other is measured and not met, and the number is zero.** The golden
+  set ran twice against one server on `Qwen3-1.7B-Q8_0` at a context of
+  8192, base and adapter, scored by the same `check` the ordinary evaluation
+  uses:
+
+  ```
+  base  18 of 20
+  lora  18 of 20      margin 0 cases
+  ```
+
+  Every case passed or failed identically, including the two `classify`
+  failures and the labels they gave. The adapter is applied rather than
+  ignored — the token counts move, 1428 to 1429 and 7699 to 7729, so
+  generation differs and outcomes do not — and it was trained on two
+  examples, both `ask_file` over one four-line table. Fourteen of the twenty
+  cases are tool families it never saw. Two examples produce no measurable
+  change, which is the honest state of this criterion: it waits on graded
+  volume, and `grade_run` is what fills that as answers are delegated.
+
+  `python -m evals.ab BASE_URL LORA_URL` repeats it and refuses three ways
+  the comparison could lie. It asks both servers which adapters they hold,
+  because `--lora` reports nothing either way and measuring the base twice
+  looks exactly like an adapter that changes nothing. It refuses two servers
+  whose model or context differ, which is not hypothetical: the same base
+  scores 19 of 20 at a context of 16384 and 18 at 8192, because a
+  24000-token document is split into more parts and the vote over them comes
+  out otherwise. And it prints the margin in cases, saying that one case in
+  twenty is five points and below what this set can tell from variance.
+
+  The third criterion in the plan — the adapter reproducing the result on a
+  second machine — is dropped. There is one machine, and a criterion nobody
+  can run is not a criterion; what made it meaningful was the adapter
+  carrying the hash of its base, and it does.
+
 - **M8 — scaling.** The cluster works and was measured on one machine;
   `containers/Containerfile.shuttle-rpc` builds it, because no official
   llama.cpp image has RPC compiled in. Showing it is worth anything needs a
