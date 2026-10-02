@@ -1407,6 +1407,23 @@ section for why.
 
 ## Troubleshooting
 
+**`install.sh` on its own gets most of the way and then stops.** Clone the
+repository; the single file is not enough. Eleven of its thirteen phases work
+alone, and two do not: `docs` builds the `shuttle-docs` image from
+`containers/` and `delegate` installs the package from `delegate/`, both
+relative to wherever the script sits. Run the file by itself and `detect`,
+`plan`, `host`, `gpu`, `quadlets`, `models` and `verify` all succeed first —
+so the failure arrives after the `host` phase has used `sudo` and the
+`models` phase has fetched seven gigabytes, as podman complaining about a
+missing Containerfile. The asset on each release is there so a fixed version
+of the installer can be checked against its `SHA256SUMS` before it runs, not
+so it can run without the tree around it.
+
+```
+git clone https://github.com/FPGArtktic/shuttle-stack && cd shuttle-stack
+./install.sh
+```
+
 **`nvidia-ctk` is installed but containers cannot see the GPU.** The CDI
 specification names the driver version in every library path, 108 times on this
 machine, so an upgraded driver leaves it pointing at files that were deleted.
