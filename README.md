@@ -22,6 +22,12 @@
 > ./install.sh
 > ```
 >
+> **Clone it — the `install.sh` on the release page is not enough on its
+> own.** Two of its phases build an image and install a package from
+> directories that have to sit beside it, and run alone it fails only after
+> using `sudo` and fetching seven gigabytes. The asset is there to verify a
+> pinned installer, not to run without the tree.
+>
 > **What a candidate means here.** The three open milestones are open for
 > reasons code cannot close: five mornings of calendar, a second machine,
 > and enough graded answers to train on. The [roadmap](#roadmap) says which
@@ -230,6 +236,15 @@ git clone https://github.com/FPGArtktic/shuttle-stack && cd shuttle-stack
 ./install.sh detect plan --dry-run      # says what it would do, changes nothing
 ./install.sh                            # does it, asking before each sudo
 ```
+
+**The clone is not optional.** `install.sh` downloaded on its own from the
+release page gets through seven of its thirteen phases and then stops: `docs`
+builds the `shuttle-docs` image from `containers/` and `delegate` installs
+the package from `delegate/`, both beside the script. By then `host` has used
+`sudo` and `models` has fetched seven gigabytes, and the error is podman
+reporting a missing Containerfile — which says nothing about the real cause.
+The release asset exists so a fixed version of the installer can be checked
+against its `SHA256SUMS`.
 
 The dry run is worth reading: it prints the VRAM arithmetic it used to decide
 how many layers go on your card, and the file differences it would write.
