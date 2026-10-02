@@ -1707,10 +1707,46 @@ WantedBy=timers.target
 EOF
 }
 
+# Every setting the sweep reads, with roots left commented.  An
+# example that works when copied unedited is an example that sweeps
+# somebody else's directories.
+render_sweep_example()
+{
+	cat <<EOF
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# Copy to sweep.toml and name the directories to sweep.  Until roots
+# names one, install.sh leaves the timer off: a timer firing nightly
+# against a configuration that says nothing would log a failure every
+# night and teach you to ignore the log.
+
+# Where to look.  Read recursively; build directories are skipped.
+#roots = ["$HOME/datasheets", "$HOME/work/bsp"]
+
+# What counts as a heading when a document is cut into sections.  The
+# default takes a numbered clause or a Markdown heading, and falls
+# back to one section per page where a document has neither.
+#heading = "^\\s*(\\d+(\\.\\d+)*\\.?\\s+[A-Z][a-z]{2,}|#{1,6}\\s+\\S)"
+
+# Write a line for every section, overnight.  Costs about as long
+# again as indexing the document and makes a page of numbers
+# searchable by what it is about.
+#digest = true
+
+# How many of the most-asked documents to leave in a server's KV
+# cache.  Off by default: a dump is 305 MiB whatever the document and
+# was measured to be worth about a second, so this spends your disk
+# and you say how much.
+#warm = 0
+EOF
+}
+
 # The timer is written but not started until the operator has said
-# which directories to sweep.  A timer firing nightly against a
-# missing configuration would log a failure every night and teach the
-# reader to ignore it.
+# which directories to sweep, and the test is whether the file says
+# so rather than whether it exists.  An empty sweep.toml, or the
+# example copied unedited, would otherwise enable a timer that fails
+# every night on "roots is empty" -- the failure this is arranged to
+# avoid, arriving by the other door.
 phase_sweep()
 {
 	local dir=$config_home/systemd/user
@@ -1719,10 +1755,11 @@ phase_sweep()
 	require_supported
 	install_file "$dir/shuttle-sweep.service" < <(render_sweep_service)
 	install_file "$dir/shuttle-sweep.timer" < <(render_sweep_timer)
+	install_file "$toml.example" < <(render_sweep_example)
 	run systemctl --user daemon-reload
-	if [[ ! -f $toml ]]; then
-		info "not enabling the timer: $toml does not exist yet"
-		info "write it first, for example:"
+	if ! grep -qE '^[[:space:]]*roots[[:space:]]*=' "$toml" 2>/dev/null; then
+		info "not enabling the timer: $toml names no roots"
+		info "copy $toml.example and say where to look, for example:"
 		info "  roots = [\"$HOME/datasheets\"]"
 		return 0
 	fi
