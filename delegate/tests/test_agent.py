@@ -601,6 +601,20 @@ class ReadSectionTest(LoopTest):
             )
         self.assertEqual(searched.call_args.kwargs["file"], "")
 
+    def test_a_code_search_can_be_narrowed_to_one_file(self) -> None:
+        preset = Preset(
+            name="x", tools=("search_code", "finish"), schema=SHAPED
+        )
+        with mock.patch.object(
+            code, "search", return_value={"hits": []}
+        ) as searched:
+            self.run_with(
+                preset,
+                [call("search_code", question="reset", file="top.sv")],
+                [call("finish", report={"answer": "a"})],
+            )
+        self.assertEqual(searched.call_args.kwargs["file"], "top.sv")
+
     def test_the_loop_reads_a_section_through_the_index(self) -> None:
         preset = Preset(
             name="x", tools=("read_section", "finish"), schema=SHAPED

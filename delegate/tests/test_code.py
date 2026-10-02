@@ -740,5 +740,90 @@ class ReachOrderTest(IndexTest):
         self.assertEqual(through["FILES:${PN}"], "names RDEPENDS")
 
 
+class WithinTest(IndexTest):
+    """A code search narrowed to one file.
+
+    The same shape as the document half, and found there first: a
+    question about one file had to be asked of the whole index, and
+    the hit could come from another. repo-scout reaches for this
+    shelf, so the gap was the same gap.
+    """
+
+    def two(self) -> None:
+        self.feed()
+        self.feed(
+            "other.sv",
+            Cut(
+                "other.sv",
+                "systemverilog",
+                "tree-sitter",
+                "",
+                [
+                    Unit("module_declaration", "other", 1, 4, "reset here"),
+                    Unit("always_construct", "other.lines 6-8", 6, 8, "r"),
+                ],
+                [],
+            ),
+        )
+
+    def ask_in(self, question: str, file: str) -> dict[str, Any]:
+        with mock.patch.object(
+            indexing, "embed", side_effect=self.embedding_for
+        ):
+            return code.search(question, 3, db=self.db, file=file)
+
+    def test_a_search_within_one_file_stays_there(self) -> None:
+        self.two()
+        got = self.ask_in("reset", "other.sv")
+        self.assertEqual({one["file"] for one in got["hits"]}, {"other.sv"})
+        self.assertEqual(got["within"], "other.sv")
+
+    def test_without_a_file_the_whole_shelf_is_searched(self) -> None:
+        self.two()
+        got = self.ask("reset")
+        self.assertNotIn("within", got)
+        self.assertNotIn("units", got)
+
+    def test_a_narrowed_search_says_what_the_file_holds(self) -> None:
+        self.two()
+        got = self.ask_in("reset", "counter.sv")
+        self.assertEqual(
+            got["units"],
+            ["counter:1", "counter.lines 6-8:6", "do_reset:10"],
+        )
+
+    def test_a_path_is_taken_by_its_name(self) -> None:
+        self.two()
+        got = self.ask_in("reset", "/elsewhere/other.sv")
+        self.assertEqual({one["file"] for one in got["hits"]}, {"other.sv"})
+
+    def test_a_file_nobody_indexed_is_refused(self) -> None:
+        self.two()
+        with self.assertRaises(IndexingError) as caught:
+            self.ask_in("reset", "absent.sv")
+        self.assertIn("not an indexed source file", str(caught.exception))
+
+    def test_two_files_do_not_share_a_narrowed_answer(self) -> None:
+        self.two()
+        one = self.ask_in("reset", "counter.sv")
+        two = self.ask_in("reset", "other.sv")
+        self.assertFalse(two["cached"])
+        self.assertEqual({x["file"] for x in one["hits"]}, {"counter.sv"})
+        self.assertEqual({x["file"] for x in two["hits"]}, {"other.sv"})
+
+    def test_a_narrowed_answer_is_kept_like_any_other(self) -> None:
+        self.two()
+        self.ask_in("reset", "other.sv")
+        again = self.ask_in("reset", "other.sv")
+        self.assertTrue(again["cached"])
+
+    def test_the_broad_answer_is_not_served_to_a_narrowed_ask(self) -> None:
+        self.two()
+        self.ask("reset")
+        narrow = self.ask_in("reset", "other.sv")
+        self.assertFalse(narrow["cached"])
+        self.assertEqual({x["file"] for x in narrow["hits"]}, {"other.sv"})
+
+
 if __name__ == "__main__":
     unittest.main()

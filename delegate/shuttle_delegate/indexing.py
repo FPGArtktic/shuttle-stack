@@ -930,19 +930,21 @@ def search(
                 f"{file} is not an indexed document; list_indexed says "
                 "what is there, and index_path reads one in"
             )
-        # A narrowed search is not cached. The kept answer is keyed on
-        # the question and the number wanted, so the same question
-        # asked within one document would be served the answer about
-        # the whole index; the key would have to grow a column and a
-        # narrowed search ranks tens of sections rather than thousands.
-        keep = ttl > 0 and not file
-        found = remembered(db, question, limit, ttl) if keep else None
+        # The file is part of the key, not a reason to skip the cache.
+        # The kept answer is keyed on the question and the number
+        # wanted, so without this the narrowed ask would be served
+        # the answer about the whole index. The marker is the same
+        # device code.search already uses to keep the two shelves'
+        # answers apart, and carries the same accepted risk: a
+        # question beginning with that literal text would collide.
+        key = f"within:{file}:{question}" if file else question
+        found = remembered(db, key, limit, ttl) if ttl > 0 else None
         if found is not None:
             hits, about = found
         else:
             hits, about = _look(db, question, limit, file)
-            if keep:
-                remember(db, question, limit, hits, about)
+            if ttl > 0:
+                remember(db, key, limit, hits, about)
         answer: dict[str, Any] = dict(about)
         if count is None:
             answer["trimmed"] = False

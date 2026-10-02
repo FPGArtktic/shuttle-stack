@@ -742,9 +742,10 @@ class WithinTest(IndexTest):
             self.ask_in("revision", "three.rpt")
         self.assertIn("not an indexed document", str(caught.exception))
 
-    def test_the_narrowed_answer_is_not_served_from_the_cache(self) -> None:
-        """The kept answer is keyed on the question alone, so the
-        narrowed ask would be given the answer about everything."""
+    def test_the_narrowed_answer_is_not_the_broad_one(self) -> None:
+        """The kept answer is keyed on the question, so without the
+        file in that key the narrowed ask is served the answer about
+        the whole index."""
         self.two()
         broad = self.ask("what is the revision name")
         self.assertFalse(broad["cached"])
@@ -753,6 +754,21 @@ class WithinTest(IndexTest):
         self.assertEqual({one["file"] for one in narrow["hits"]}, {"two.rpt"})
         again = self.ask("what is the revision name")
         self.assertTrue(again["cached"])
+
+    def test_a_narrowed_answer_is_kept_like_any_other(self) -> None:
+        self.two()
+        self.ask_in("what is the revision name", "two.rpt")
+        again = self.ask_in("what is the revision name", "two.rpt")
+        self.assertTrue(again["cached"])
+        self.assertEqual({one["file"] for one in again["hits"]}, {"two.rpt"})
+
+    def test_two_documents_do_not_share_a_narrowed_answer(self) -> None:
+        self.two()
+        one = self.ask_in("what is the revision name", "one.rpt")
+        two = self.ask_in("what is the revision name", "two.rpt")
+        self.assertFalse(two["cached"])
+        self.assertEqual({x["file"] for x in one["hits"]}, {"one.rpt"})
+        self.assertEqual({x["file"] for x in two["hits"]}, {"two.rpt"})
 
     def test_the_semantic_half_ranks_the_document_it_was_given(
         self,

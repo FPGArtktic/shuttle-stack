@@ -652,8 +652,11 @@ def search_code(
     question: str,
     limit: int = 3,
     profile: str = DEFAULT_PROFILE,
+    file: str = "",
 ) -> dict[str, Any]:
-    return code.search(question, limit, backend(profile).count_tokens)
+    return code.search(
+        question, limit, backend(profile).count_tokens, file=file
+    )
 
 
 @mcp.tool(

@@ -777,16 +777,21 @@ def expand(
     return answer
 
 
-def _lexical(db: sqlite3.Connection, question: str) -> list[int]:
+def _lexical(
+    db: sqlite3.Connection, question: str, file: str = ""
+) -> list[int]:
     query = indexing.terms(question)
     if not query:
         return []
+    sql = "SELECT rowid FROM units_fts WHERE units_fts MATCH ?"
+    args: list[Any] = [query]
+    if file:
+        sql += " AND rowid IN (SELECT id FROM units WHERE source = ?)"
+        args.append(file)
+    sql += " ORDER BY rank LIMIT ?"
+    args.append(indexing.CANDIDATES)
     try:
-        rows = db.execute(
-            "SELECT rowid FROM units_fts WHERE units_fts MATCH ?"
-            " ORDER BY rank LIMIT ?",
-            (query, indexing.CANDIDATES),
-        ).fetchall()
+        rows = db.execute(sql, args).fetchall()
     except sqlite3.OperationalError as error:
         raise IndexingError(
             f"the lexical index refused {query!r}: {error}"
@@ -794,13 +799,36 @@ def _lexical(db: sqlite3.Connection, question: str) -> list[int]:
     return [int(row["rowid"]) for row in rows]
 
 
-def _semantic(db: sqlite3.Connection, vector: list[float]) -> list[int]:
-    rows = db.execute(
-        "SELECT id FROM vec_units WHERE embedding MATCH ?"
-        " AND k = ? ORDER BY distance",
-        (indexing._blob(vector), indexing.CANDIDATES),
-    ).fetchall()
-    return [int(row["id"]) for row in rows]
+def _semantic(
+    db: sqlite3.Connection, vector: list[float], file: str = ""
+) -> list[int]:
+    """The nearest units, from the whole index or from one file.
+
+    The same shape as the document half, and for the same reason:
+    vec0 answers a KNN query over the table and takes no condition on
+    the file, so narrowing by taking the top k of everything and then
+    dropping the other files loses a unit that is the nearest within
+    its own file and far down the index.
+    """
+    if not file:
+        rows = db.execute(
+            "SELECT id FROM vec_units WHERE embedding MATCH ?"
+            " AND k = ? ORDER BY distance",
+            (indexing._blob(vector), indexing.CANDIDATES),
+        ).fetchall()
+        return [int(row["id"]) for row in rows]
+    mine = [
+        int(row["id"])
+        for row in db.execute(
+            "SELECT id FROM units WHERE source = ? ORDER BY ordinal LIMIT ?",
+            (file, indexing.MAX_IN_DOCUMENT),
+        )
+    ]
+    held = _vectors(db, mine)
+    ranked = sorted(
+        held.items(), key=lambda one: -indexing._cosine(vector, one[1])
+    )
+    return [one[0] for one in ranked[: indexing.CANDIDATES]]
 
 
 def _vectors(db: sqlite3.Connection, ids: list[int]) -> dict[int, list[float]]:
@@ -857,12 +885,12 @@ def _rows(
 
 
 def _look(
-    db: sqlite3.Connection, question: str, limit: int
+    db: sqlite3.Connection, question: str, limit: int, file: str = ""
 ) -> tuple[list[Hit], dict[str, Any]]:
-    ranked = {"lexical": _lexical(db, question)}
+    ranked = {"lexical": _lexical(db, question, file)}
     note = ""
     try:
-        ranked["semantic"] = _semantic(db, indexing.embed([question])[0])
+        ranked["semantic"] = _semantic(db, indexing.embed([question])[0], file)
     except IndexingError as error:
         note = f"the semantic half is missing: {error}"
     fused = indexing.fuse(ranked)
@@ -872,9 +900,32 @@ def _look(
         "searched": sorted(name for name, ids in ranked.items() if ids),
         "cached": False,
     }
+    if file:
+        about["within"] = file
+        # What the file holds, beside what matched, for the reason the
+        # document half carries its sections: a ranking answers which
+        # unit fits the question and not what is in the file, and the
+        # question a loop sends is its own whole request.
+        about["units"] = _unit_names(db, file)
     if note:
         about["degraded"] = note
     return hits, about
+
+
+def _unit_names(db: sqlite3.Connection, file: str) -> list[str]:
+    """The file's unit names, for a narrowed search to carry."""
+    rows = db.execute(
+        "SELECT kind, name, first_line FROM units WHERE source = ?"
+        " ORDER BY ordinal LIMIT ?",
+        (file, indexing.IN_SEARCH + 1),
+    ).fetchall()
+    held = [
+        f"{row['name'] or row['kind']}:{row['first_line']}"
+        for row in rows[: indexing.IN_SEARCH]
+    ]
+    if len(rows) > indexing.IN_SEARCH:
+        held.append(f"... and more than {indexing.IN_SEARCH}")
+    return held
 
 
 def search(
@@ -884,12 +935,15 @@ def search(
     budget: int = indexing.SEARCH_TOKENS,
     db: sqlite3.Connection | None = None,
     ttl: float = indexing.SEARCH_TTL,
+    file: str = "",
 ) -> dict[str, Any]:
     """The units nearest the question, each with its lines.
 
     The cache is keyed on the question with a marker in front of it,
     so that the same words asked of the documents and of the source
-    are two questions rather than one answer served to both.
+    are two questions rather than one answer served to both, and the
+    file a search was narrowed to is part of that marker for the same
+    reason.
     """
     if not question.strip():
         raise IndexingError("a search needs something to search for")
@@ -901,12 +955,23 @@ def search(
                 f"{indexing.index_file()} holds no source; index_path "
                 "adds a file"
             )
-        key = f"code:{question}"
+        file = Path(file).name if file else ""
+        if (
+            file
+            and not db.execute(
+                "SELECT 1 FROM units WHERE source = ? LIMIT 1", (file,)
+            ).fetchone()
+        ):
+            raise IndexingError(
+                f"{file} is not an indexed source file; list_indexed "
+                "says what is there, and index_path reads one in"
+            )
+        key = f"code:{file}:{question}"
         found = indexing.remembered(db, key, limit, ttl) if ttl > 0 else None
         if found is not None:
             hits, about = found
         else:
-            hits, about = _look(db, question, limit)
+            hits, about = _look(db, question, limit, file)
             if ttl > 0:
                 indexing.remember(db, key, limit, hits, about)
         answer: dict[str, Any] = dict(about)

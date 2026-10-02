@@ -167,6 +167,7 @@ class SearchDocsTest(unittest.TestCase):
             for tool in asyncio.run(mcp.list_tools())
         }
         self.assertIn("file", fields["search_docs"])
+        self.assertIn("file", fields["search_code"])
 
 
 if __name__ == "__main__":

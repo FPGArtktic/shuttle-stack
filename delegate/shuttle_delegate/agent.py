@@ -202,10 +202,16 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     },
     "search_code": {
         "description": "Search the indexed source. Returns units with "
-        "the file and the lines each occupies.",
+        "the file and the lines each occupies. Pass a file to search "
+        "inside that one alone, and the answer also says what units "
+        "it holds; without one the whole index is searched and a hit "
+        "may come from another file.",
         "parameters": {
             "type": "object",
-            "properties": {"question": {"type": "string"}},
+            "properties": {
+                "question": {"type": "string"},
+                "file": {"type": "string"},
+            },
             "required": ["question"],
         },
     },
@@ -724,7 +730,12 @@ def _perform(
             )
             return json.dumps(found, ensure_ascii=False), True
         if call.name == "search_code":
-            found = code.search(str(args["question"]), 3, server.count_tokens)
+            found = code.search(
+                str(args["question"]),
+                3,
+                server.count_tokens,
+                file=str(args.get("file", "")),
+            )
             return json.dumps(found, ensure_ascii=False), True
         if call.name == "find_references":
             with code.connect() as db:
