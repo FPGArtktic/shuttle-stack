@@ -68,8 +68,10 @@ saving.
 
 ## Status
 
-M0 is the inference layer, M1 the delegate that puts it in front of an agent,
-and M2 the evaluation that says how far either can be trusted.
+**Six of the nine milestones are closed against their own numbers** — M0 to
+M5 — and the [roadmap](#roadmap) says what the other three are waiting on.
+The table below is by component rather than by milestone, with the
+measurement that earned each line.
 
 | Component | State |
 |---|---|
@@ -1445,7 +1447,28 @@ trade is not acceptable.
 
 ## Roadmap
 
-The order of work is M0 to M1 to M2, then M3 and M5, then M6 and M7. M4 runs
+Every milestone in the plan has a numeric acceptance criterion, so each row
+below says whether that number was reached — not whether the code was
+written. Six of the nine are closed.
+
+| | | |
+|---|---|---|
+| **M0** inference layer | **done** | two servers, the internal network, the installer |
+| **M1** delegate | **done** | the tools, 20 of 20 on the golden set, 97% of context saved on a real task |
+| **M2** measured behaviour | **done** | the evaluation set, sessions over the KV cache, schema-constrained output, best-of-n |
+| **M3** documents and code | **done** | PDFs and OCR, fourteen languages, the hybrid index, a register table out as JSON |
+| **M4** isolation | **done**, with a departure | no egress, proved by two probes; the port and token half of the criterion cannot hold and the reason is below |
+| **M5** graphs and agents | **done** | the graph, the two-hop expansion, six presets, 5 of 5 seeded defects, 27 of 27 reference fields |
+| **M6** batch work | built, waiting on you | every part measured; the timer stays off until `sweep.toml` names a directory, then five mornings |
+| **M7** distillation | 1 of 3 criteria | retraining is one command and an adapter exists; beating the base needs graded volume, and the third criterion a second machine |
+| **M8** scale-out, optional | built, unproven | the RPC image builds because no official one has it; a pool needs a second machine, and on one it is slower |
+
+"Built, waiting" means the code is in and measured and the criterion asks for
+something code cannot supply: five mornings of calendar, a second machine, or
+enough graded answers to train on. Those three are named where they are,
+rather than counted as done.
+
+The order of work was M0 to M1 to M2, then M3 and M5, then M6 and M7. M4 ran
 alongside from M2. M8 is independent of all of it.
 
 - **M0 — inference layer.** Done: the two servers, the internal network and
