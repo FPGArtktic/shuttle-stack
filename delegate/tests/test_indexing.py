@@ -623,6 +623,34 @@ class BoxedHeadingTest(unittest.TestCase):
         "+------------+-----------+\n"
     )
 
+    def test_a_section_that_is_only_its_own_name_is_dropped(self) -> None:
+        """A report's contents page matches the heading pattern line
+        by line, so each entry became a section holding its own name.
+        They are decoys: BM25 favours a short text, and doc-qa read
+        `6. Slow 1200mV 125C Model Fmax Summary`, all seventeen
+        characters, and said the report does not state the Fmax."""
+        text = (
+            "  1. Legal Notice\n"
+            "  2. Fmax Summary\n"
+            "  3. Setup Summary\n"
+            "\n"
+            "+----------------+\n"
+            "; Fmax Summary   ;\n"
+            "+------+---------+\n"
+            "; Fmax ; 154 MHz ;\n"
+            "+------+---------+\n"
+        )
+        sections, how = split(text)
+        self.assertEqual(how, "headings")
+        self.assertEqual([one.heading for one in sections], ["Fmax Summary"])
+        self.assertIn("154 MHz", sections[0].text)
+
+    def test_a_section_with_anything_in_it_is_kept(self) -> None:
+        sections, _ = split(
+            "## One\nalpha\n\n## Two\nbeta\n\n## Three\ngamma\n"
+        )
+        self.assertEqual(len(sections), 3)
+
     def test_a_boxed_title_is_a_heading(self) -> None:
         sections, how = split(self.REPORT)
         self.assertEqual(how, "headings")
@@ -685,6 +713,35 @@ class WithinTest(IndexTest):
         got = self.ask_in("what is the revision name", "two.rpt")
         self.assertEqual({one["file"] for one in got["hits"]}, {"two.rpt"})
         self.assertEqual(got["within"], "two.rpt")
+
+    def test_a_question_naming_a_document_says_it_was_not_narrowed(
+        self,
+    ) -> None:
+        """Measured: asked `did anything fail in counter.sta.rpt` the
+        first hit was build.log, a broken make log indexed beside it,
+        so the loop's first sight of the question was a pile of real
+        error lines out of another file."""
+        self.two()
+        got = self.ask("did anything fail in two.rpt")
+        self.assertIn("two.rpt", got["not_narrowed"])
+        self.assertIn("pass file", got["not_narrowed"])
+
+    def test_a_narrowed_search_does_not_say_it(self) -> None:
+        self.two()
+        got = self.ask_in("did anything fail in two.rpt", "two.rpt")
+        self.assertNotIn("not_narrowed", got)
+
+    def test_a_question_naming_none_of_them_says_nothing(self) -> None:
+        self.two()
+        got = self.ask("what is the revision name")
+        self.assertNotIn("not_narrowed", got)
+
+    def test_a_question_naming_two_of_them_decides_nothing(self) -> None:
+        """A question may mention a document and still want the index,
+        and naming two is not a recommendation anyone can make."""
+        self.two()
+        got = self.ask("compare one.rpt with two.rpt")
+        self.assertNotIn("not_narrowed", got)
 
     def test_a_narrowed_search_carries_the_document_contents(
         self,

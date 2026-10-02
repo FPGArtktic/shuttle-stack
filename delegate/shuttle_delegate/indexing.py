@@ -421,8 +421,24 @@ def split(text: str, heading: str = HEADING) -> tuple[list[Section], str]:
     held: list[str] = []
 
     def close() -> None:
-        if held:
-            found.append(Section(at_page, heading_text, "\n".join(held)))
+        """Keep the section, unless it is nothing but its own name.
+
+        A report's table of contents is a list of the headings that
+        follow it, and the heading pattern matches every line of it,
+        so each becomes a section holding one line: its own name. They
+        are not answers and they are decoys -- BM25 favours a short
+        text, and doc-qa read `6. Slow 1200mV 125C Model Fmax
+        Summary`, all seventeen characters of it, and reported that
+        the report does not state the Fmax. Thirty-seven of that
+        file's eighty-two sections were these; prose documents have
+        none.
+        """
+        if not held:
+            return
+        text = "\n".join(held)
+        if text.strip() == heading_text.strip():
+            return
+        found.append(Section(at_page, heading_text, text))
 
     for at, line in enumerate(lines):
         seen = PAGE.match(line.strip())
@@ -937,6 +953,7 @@ def search(
         # device code.search already uses to keep the two shelves'
         # answers apart, and carries the same accepted risk: a
         # question beginning with that literal text would collide.
+        unnarrowed = "" if file else _names_asked(db, question)
         key = f"within:{file}:{question}" if file else question
         found = remembered(db, key, limit, ttl) if ttl > 0 else None
         if found is not None:
@@ -946,6 +963,11 @@ def search(
             if ttl > 0:
                 remember(db, key, limit, hits, about)
         answer: dict[str, Any] = dict(about)
+        if unnarrowed:
+            answer["not_narrowed"] = (
+                f"the question names {unnarrowed}, which is indexed, and "
+                "this search was not kept inside it; pass file to do that"
+            )
         if count is None:
             answer["trimmed"] = False
             return _trim(answer, hits, lambda _text: 0, budget)
@@ -955,6 +977,29 @@ def search(
     finally:
         if own:
             db.close()
+
+
+def _names_asked(db: sqlite3.Connection, question: str) -> str:
+    """The one indexed document the question names, if it names one.
+
+    A search of the whole index answers about whatever is nearest, and
+    the question having named a file is not something the ranking
+    knows. Measured: asked `did anything fail in counter.sta.rpt`, the
+    first hit was build.log -- a broken make log indexed beside it --
+    so the loop's first sight of the question was a pile of real error
+    lines out of another file.
+
+    Only when exactly one is named, and only ever as a note: a
+    question may mention a document and still want the index. Saying
+    which, rather than deciding for the caller.
+    """
+    low = question.lower()
+    found = [
+        str(row["path"])
+        for row in db.execute("SELECT path FROM documents")
+        if str(row["path"]).lower() in low
+    ]
+    return found[0] if len(found) == 1 else ""
 
 
 def _look(
