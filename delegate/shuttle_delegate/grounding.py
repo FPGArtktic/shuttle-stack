@@ -107,13 +107,42 @@ class Grounding:
         return entry
 
 
+def present(span: str, flat: str) -> bool:
+    """Whether the source holds this quotation, as a span or by lines.
+
+    A span first, because contiguity is the stronger claim and prose
+    is contiguous. A table is not: the meaningful quotation out of one
+    is a column's name and its value, and between those two lines sits
+    a rule of dashes nobody quotes. Measured on a timing report, every
+    correct answer was refused for that alone --
+
+        ; Fmax       ; Restricted Fmax ; Clock Name ; Note ;
+        ; 154.23 MHz ; 154.23 MHz      ; clk        ;      ;
+
+    is the table read right, and the source has `+---+---+` between
+    the two.
+
+    Line by line is still a real check: each line has to be a line the
+    source holds, so nothing can be invented, only put side by side.
+    What a reordering could do is pair a value with the wrong label,
+    and that claim lives in the answer, which is prose and grounded
+    nowhere.
+    """
+    if flatten(span) in flat:
+        return True
+    lines = [one for one in span.splitlines() if one.strip()]
+    if len(lines) < 2:
+        return False
+    return all(flatten(one) in flat for one in lines)
+
+
 def check(answer: str, source: str) -> Grounding:
     """Every quotation in the answer, against the text it was given."""
     flat = flatten(source)
     found = quotes(answer)
     return Grounding(
         total=len(found),
-        missing=[span for span in found if flatten(span) not in flat],
+        missing=[span for span in found if not present(span, flat)],
     )
 
 
@@ -145,7 +174,7 @@ def _absent(key: str, value: object, flat: str) -> list[str]:
     extract reporting a verified answer it had not checked.
     """
     if isinstance(value, str):
-        if len(value.strip()) < MIN_FIELD or flatten(value) in flat:
+        if len(value.strip()) < MIN_FIELD or present(value, flat):
             return []
         return [f"{key}={value!r}"]
     if isinstance(value, dict):

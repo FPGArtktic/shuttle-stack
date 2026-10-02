@@ -190,5 +190,82 @@ class FieldShapeTest(unittest.TestCase):
         self.assertEqual(fields_in_source({"port": 8081}, self.SOURCE), [])
 
 
+class TableQuoteTest(unittest.TestCase):
+    """A quotation out of a table is not one span of the source.
+
+    Measured on a timing report: every correct answer doc-qa gave was
+    refused, because the column names and their values have a rule of
+    dashes between them that nobody quotes. The field a preset grounds
+    is compared whole, which is the path this is about.
+    """
+
+    REPORT = (
+        "+------------+-----------------+------------+------+\n"
+        "; Fmax       ; Restricted Fmax ; Clock Name ; Note ;\n"
+        "+------------+-----------------+------------+------+\n"
+        "; 154.23 MHz ; 154.23 MHz      ; clk        ;      ;\n"
+        "+------------+-----------------+------------+------+\n"
+    )
+
+    HELD = (
+        "; Fmax       ; Restricted Fmax ; Clock Name ; Note ;\n"
+        "; 154.23 MHz ; 154.23 MHz      ; clk        ;      ;"
+    )
+
+    def test_a_label_and_its_value_ground_together(self) -> None:
+        self.assertEqual(
+            fields_in_source({"quote": self.HELD}, self.REPORT), []
+        )
+
+    def test_one_line_of_the_table_grounds_as_a_span(self) -> None:
+        one = "; 154.23 MHz ; 154.23 MHz      ; clk        ;      ;"
+        self.assertEqual(fields_in_source({"quote": one}, self.REPORT), [])
+
+    def test_an_invented_line_is_still_refused(self) -> None:
+        """Line by line is not line by invention."""
+        made = (
+            "; Fmax       ; Restricted Fmax ; Clock Name ; Note ;\n"
+            "; 912.00 MHz ; 912.00 MHz      ; clk        ;      ;"
+        )
+        self.assertEqual(
+            len(fields_in_source({"quote": made}, self.REPORT)), 1
+        )
+
+    def test_one_invented_line_refuses_the_whole_quotation(self) -> None:
+        made = self.HELD + "\n; a line the report does not hold at all ;"
+        self.assertEqual(
+            len(fields_in_source({"quote": made}, self.REPORT)), 1
+        )
+
+    def test_a_single_line_that_is_absent_is_refused(self) -> None:
+        """One line has no lines to fall back to, so the span rule
+        stands: the relaxation is for a quotation of several."""
+        self.assertEqual(
+            len(
+                fields_in_source(
+                    {"quote": "; 912.00 MHz ; not in it ;"}, self.REPORT
+                )
+            ),
+            1,
+        )
+
+    def test_prose_across_a_line_break_is_unaffected(self) -> None:
+        source = "The reset is held for ten clock\ncycles after power-up."
+        said = "The reset is held for ten clock cycles"
+        self.assertEqual(fields_in_source({"quote": said}, source), [])
+
+
+class QuotesByLineTest(unittest.TestCase):
+    def test_an_unclosed_quotation_ends_at_its_line(self) -> None:
+        """Deliberate, so a stray mark cannot swallow a paragraph --
+        and the consequence is that the closing line of a quotation
+        written across two lines is not extracted as one. A field a
+        preset grounds does not go through this path; it is compared
+        whole.
+        """
+        said = '"first line of it\nsecond line of it"'
+        self.assertEqual(quotes(said), ["first line of it"])
+
+
 if __name__ == "__main__":
     unittest.main()
