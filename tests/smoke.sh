@@ -91,6 +91,23 @@ check_quadlets()
 	printf 'smoke: quadlet examples: ok\n'
 }
 
+# The user tools are hand-copied onto a PATH rather than written by the
+# installer, so this check is all that stands between a typo and a broken
+# command in somebody's shell.
+check_usr_tools()
+{
+	local file
+
+	if [[ ! -d usr_tools ]]; then
+		return 0
+	fi
+	for file in usr_tools/*; do
+		bash -n "$file" || fail "bash -n $file"
+		shellcheck "$file" || fail "shellcheck $file"
+	done
+	printf 'smoke: usr_tools: ok\n'
+}
+
 check_dry_run()
 {
 	local distro=$1 out
@@ -111,6 +128,7 @@ main()
 	bash -n install.sh || fail "bash -n install.sh"
 	shellcheck install.sh tests/*.sh || fail shellcheck
 	printf 'smoke: syntax and shellcheck: ok\n'
+	check_usr_tools
 	check_python
 	check_mcp_json
 	check_quadlets

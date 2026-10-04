@@ -267,6 +267,25 @@ bench    shuttle-long 2048 tok: pp 631.9 tg 18.5 tok/s
 Two `ok` lines are the thing to look for. `./install.sh bench` adds the
 numbers for your own hardware.
 
+### Stopping them for a session
+
+`shuttle-long` holds the GPU for as long as it runs, which is a problem on a
+machine with one card and something else that wants it. `usr_tools/shuttlectl`
+stops and starts the user units by hand and leaves the autostart the installer
+enabled alone, so a reboot brings both servers back:
+
+```
+cp usr_tools/shuttlectl ~/.local/bin/
+shuttlectl stop long      # the card is free
+shuttlectl start long     # loading again
+shuttlectl wait long      # until /health answers, up to fifteen minutes
+shuttlectl status         # unit state, health and VRAM
+```
+
+`status` and `logs long` are the two worth remembering when a server will not
+come up: the first says whether systemd and `/health` agree, the second follows
+the unit's journal.
+
 ### Give it to an agent
 
 The repository ships the registration, so from a client that reads

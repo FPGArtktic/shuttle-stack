@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Mateusz Okulanis
+#
+# Hand control over the user-level SHUTTLE units.  Autostart at login
+# stays as the installer left it ([Install] WantedBy=default.target in
+# the .container units, plus Linger=yes), so stopping a server here
+# frees the GPU for this session only and a reboot brings it back.
+
+set -Eeuo pipefail
+
+declare -rA PORTS=([long]=8081 [fast]=8082)
+readonly ALL=(long fast)
+# 180 * 5 s is HealthStartPeriod=900s from the units: a cold load of the
+# large model takes minutes, and a shorter wait would report a failure
+# that has not happened.
+readonly WAIT_TRIES=180
+readonly WAIT_SLEEP=5
+
+targets=()
+
+die()
+{
+	printf 'shuttlectl: error: %s\n' "$*" >&2
+	exit 1
+}
+
+usage_die()
+{
+	printf 'shuttlectl: %s\n\n' "$*" >&2
+	usage >&2
+	exit 2
+}
+
+usage()
+{
+	cat <<'USAGE'
+shuttlectl - control the SHUTTLE services
+
+Usage:
+  shuttlectl start   [long|fast]   start (both by default)
+  shuttlectl stop    [long|fast]   stop (both by default)
+  shuttlectl restart [long|fast]   restart
+  shuttlectl status                unit state, health and VRAM
+  shuttlectl logs    <long|fast>   follow the log (Ctrl-C ends)
+  shuttlectl wait    [long|fast]   wait until /health answers
+
+Autostart after a reboot is left untouched.
+USAGE
+}
+
+# Resolved here rather than in a process substitution, where an unknown
+# name would kill only the subshell and the loop would read nothing.
+resolve_targets()
+{
+	local t
+
+	if (( $# == 0 )); then
+		targets=("${ALL[@]}")
+		return
+	fi
+	for t in "$@"; do
+		[[ -v PORTS[$t] ]] ||
+			usage_die "unknown service '$t'"
+		targets+=("$t")
+	done
+}
+
+healthy()
+{
+	curl -fsS -o /dev/null --max-time 3 \
+		"http://127.0.0.1:${PORTS[$1]}/health" 2> /dev/null
+}
+
+# The network unit has no [Install], so nothing wants it at login.
+# Quadlet makes every server require it, but starting it first keeps a
+# broken network reported as a broken network.
+cmd_start()
+{
+	local t
+
+	resolve_targets "$@"
+	systemctl --user start shuttle-network.service
+	for t in "${targets[@]}"; do
+		printf ':: start shuttle-%s\n' "$t"
+		systemctl --user start "shuttle-$t.service"
+	done
+}
+
+cmd_stop()
+{
+	local t
+
+	resolve_targets "$@"
+	for t in "${targets[@]}"; do
+		printf ':: stop shuttle-%s\n' "$t"
+		systemctl --user stop "shuttle-$t.service"
+	done
+}
+
+cmd_restart()
+{
+	local t
+
+	resolve_targets "$@"
+	for t in "${targets[@]}"; do
+		printf ':: restart shuttle-%s\n' "$t"
+		systemctl --user restart "shuttle-$t.service"
+	done
+}
+
+wait_one()
+{
+	local t=$1 i
+
+	printf ':: waiting for shuttle-%s (/health on :%s) ' \
+		"$t" "${PORTS[$t]}"
+	for ((i = 0; i < WAIT_TRIES; i++)); do
+		if healthy "$t"; then
+			printf ' ready\n'
+			return 0
+		fi
+		printf '.'
+		sleep "$WAIT_SLEEP"
+	done
+	printf ' TIMEOUT\n'
+	return 1
+}
+
+cmd_wait()
+{
+	local t rc=0
+
+	resolve_targets "$@"
+	for t in "${targets[@]}"; do
+		wait_one "$t" || rc=1
+	done
+	return "$rc"
+}
+
+cmd_status()
+{
+	local t state health
+
+	for t in "${ALL[@]}"; do
+		state=$(systemctl --user is-active "shuttle-$t.service" \
+			2> /dev/null) || true
+		if healthy "$t"; then
+			health='health: ok'
+		else
+			health='health: -'
+		fi
+		printf '%-14s %-10s %s (port %s)\n' "shuttle-$t" \
+			"${state:-unknown}" "$health" "${PORTS[$t]}"
+	done
+	state=$(systemctl --user is-active shuttle-network.service \
+		2> /dev/null) || true
+	printf '%-14s %s\n' shuttle-net "${state:-unknown}"
+
+	if command -v nvidia-smi > /dev/null 2>&1; then
+		printf '\n'
+		nvidia-smi --query-gpu=memory.used,memory.total \
+			--format=csv,noheader | sed 's/^/VRAM: /'
+	fi
+}
+
+cmd_logs()
+{
+	(( $# == 1 )) || usage_die 'logs takes one service: long|fast'
+	[[ -v PORTS[$1] ]] || usage_die "unknown service '$1'"
+	journalctl --user -u "shuttle-$1.service" -f -n 50
+}
+
+main()
+{
+	local cmd=${1-}
+
+	command -v systemctl > /dev/null ||
+		die 'systemctl not found; these are systemd user units'
+	case $cmd in
+	start | stop | restart | wait | logs)
+		shift
+		"cmd_$cmd" "$@"
+		;;
+	status)
+		cmd_status
+		;;
+	'' | -h | --help | help)
+		usage
+		;;
+	*)
+		usage_die "unknown command '$cmd'"
+		;;
+	esac
+}
+
+main "$@"
