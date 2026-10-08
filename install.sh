@@ -56,10 +56,18 @@ declare -rA DISTRO=(
 	[arch.gpu_packages]="nvidia-container-toolkit"
 	[arch.gpu_repo]=""
 	[ubuntu.refresh]="apt-get update"
-	[ubuntu.install]="apt-get install -y"
+	# --allow-downgrades: the pinned toolkit is older than the one NVIDIA's
+	# repository now offers, and apt refuses a downgrade under -y without it.
+	[ubuntu.install]="apt-get install -y --allow-downgrades"
 	[ubuntu.query]=dpkg_installed
 	[ubuntu.packages]="podman passt uidmap jq curl"
-	[ubuntu.gpu_packages]="nvidia-container-toolkit"
+	# 1.19 and later write a CDI spec with additionalGids, which Podman
+	# 4.9 (the Ubuntu 24.04 package) cannot read: "unresolvable CDI
+	# devices nvidia.com/gpu=all".  1.18.2 writes cdiVersion 0.5.0.
+	[ubuntu.gpu_packages]="nvidia-container-toolkit=1.18.2-1\
+ nvidia-container-toolkit-base=1.18.2-1\
+ libnvidia-container1=1.18.2-1\
+ libnvidia-container-tools=1.18.2-1"
 	[ubuntu.gpu_repo]=nvidia_apt_repo
 )
 
@@ -1015,13 +1023,18 @@ pacman_installed()
 }
 
 # dpkg still knows a package that was removed but kept its configuration
-# files, so the status is compared instead of the exit code.
+# files, so the status is compared instead of the exit code.  A name
+# given as name=version, as apt takes it, is present only at that version.
 dpkg_installed()
 {
-	local status
+	local name=${1%%=*} version status
 
-	status=$(dpkg-query -W -f='${Status}' "$1" 2>/dev/null) || return 1
-	[[ $status == "install ok installed" ]]
+	status=$(dpkg-query -W -f='${Status}' "$name" 2>/dev/null) || return 1
+	[[ $status == "install ok installed" ]] || return 1
+	if [[ $1 == *=* ]]; then
+		version=$(dpkg-query -W -f='${Version}' "$name") || return 1
+		[[ $version == "${1#*=}" ]]
+	fi
 }
 
 missing_packages()
