@@ -8,7 +8,7 @@
 [![latest tag](https://img.shields.io/github/v/tag/FPGArtktic/shuttle-stack)](https://github.com/FPGArtktic/shuttle-stack/tags)
 [![licence: GPL-3.0-only](https://img.shields.io/badge/licence-GPL--3.0--only-blue.svg)](LICENSE)
 
-> ### v1.0.0-rc1 is out — and it would like to be broken
+> ### v1.0.0 is out — the candidate asked to be broken, and Ubuntu obliged
 >
 > Six of the nine milestones are closed against their own acceptance
 > numbers: the inference layer, the delegate, the measured behaviour, the
@@ -29,11 +29,20 @@
 > using `sudo` and fetching seven gigabytes. The asset is there to verify a
 > pinned installer, not to run without the tree.
 >
-> **What a candidate means here.** The three open milestones are open for
-> reasons code cannot close: five mornings of calendar, a second machine,
-> and enough graded answers to train on. The [roadmap](#roadmap) says which
-> is which, with the numbers either way — including the one that came back
-> zero. Nothing is marked done on the strength of the code being written.
+> **What the candidate turned up.** `v1.0.0-rc1` asked to be broken and
+> Ubuntu 24.04 broke it. On hardware with a GPU the `gpu` phase stopped at
+> `unresolvable CDI devices nvidia.com/gpu=all`, because podman 4.9 — the
+> version Ubuntu ships — cannot read the CDI specification the current
+> NVIDIA toolkit writes. The installer now holds the toolkit at the last
+> version that works, and Ubuntu 24.04 has an install on real hardware
+> behind it rather than a dry run. [Troubleshooting](#troubleshooting) has
+> the version table and the two commands the installer leaves to you.
+>
+> **The three open milestones are still open**, for reasons code cannot
+> close: five mornings of calendar, a second machine, and enough graded
+> answers to train on. The [roadmap](#roadmap) says which is which, with
+> the numbers either way — including the one that came back zero. Nothing
+> is marked done on the strength of the code being written.
 >
 > If it breaks on your distribution, your card or your documents, that is
 > the report worth having. [Open an
@@ -149,7 +158,7 @@ measurement that earned each line.
 | Report limit and run files | working — a thousand tokens back, the whole output to `.shuttle/runs/<id>.md` |
 | Audit log | working — one JSONL line per call in `.shuttle/audit.jsonl`, success or failure |
 | Citation grounding | working — a quoted span absent from the source is listed rather than trusted; compared without markup, wrapping or spacing |
-| Ubuntu 24.04 | not yet on hardware — the dry runs pass in CI, the system-changing phases have only been run on Arch |
+| Ubuntu 24.04 | working — installed on hardware with a GPU, and the stack runs there; it needed the NVIDIA toolkit held at 1.18.2-1, because podman 4.9 cannot read the CDI specification 1.19 and later write. Every number below is still the Arch machine's |
 
 Neither milestone includes any of the following, and no placeholders are left
 for them:
@@ -186,7 +195,11 @@ does, it does well.
 - A regular user account. The installer refuses to run as root.
 - An NVIDIA GPU is optional. With one, `shuttle-long` offloads as many layers
   as the VRAM budget allows through CDI, which needs
-  `nvidia-container-toolkit`; without one, both servers run on the CPU.
+  `nvidia-container-toolkit`; without one, both servers run on the CPU. On
+  Ubuntu the installer asks for `1.18.2-1` rather than the newest, because
+  1.19 and later write a CDI specification that podman 4.9 cannot parse, and
+  `apt-mark hold` is what keeps it there. [Troubleshooting](#troubleshooting)
+  has the error and the one command the installer leaves to you.
 - `uv`, for the delegate, which is Python and runs on the host rather than in
   a container. So the host does end up with a Python — `uv` fetches its own
   interpreter and keeps it with the project, so there is no system Python to
@@ -225,7 +238,7 @@ evals.reduction` repeats them on yours.
 | `bash` 5, `curl`, `jq` | all `install.sh` needs; it is shell and no Python |
 | `uv` | for the delegate, which is Python. `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | 13 GB of disk | 7.0 GiB of models, 5.2 GB of images |
-| An NVIDIA GPU | optional. Without one both servers run on the CPU, slower |
+| An NVIDIA GPU | optional. Without one both servers run on the CPU, slower. On Ubuntu the toolkit is held at 1.18.2-1; [why](#troubleshooting) |
 
 It refuses to run as root, and every command that needs `sudo` is shown and
 waits for you.
@@ -1465,6 +1478,36 @@ machine, so an upgraded driver leaves it pointing at files that were deleted.
 The error surfaces as a runtime failure rather than a missing file. `detect`
 reports the file as `stale` when it no longer matches `nvidia-smi`, and `gpu`
 rewrites it; running `./install.sh detect gpu` after a driver upgrade is enough.
+
+**`unresolvable CDI devices nvidia.com/gpu=all` on Ubuntu 24.04.** The `gpu`
+phase writes the specification and then cannot use it. `nvidia-ctk` is
+installed, `nvidia-smi` answers on the host, the file is there — and podman
+says `failed to parse CDI Spec ... json: unknown field "additionalGids"`. The
+toolkit and the podman Ubuntu 24.04 ships disagree about the CDI version:
+
+| toolkit | writes | podman 4.9.3 reads it |
+|---|---|---|
+| 1.17.9-1, 1.18.2-1 | `cdiVersion: 0.5.0` | yes |
+| 1.19.1-1, 1.20.1-1 | `cdiVersion: 0.7.0`, with `additionalGids` | no |
+
+Ubuntu 24.04 has podman 4.9.3 and NVIDIA's repository offers 1.20.1, so a
+fresh install gets the pair that cannot work. The `host` phase therefore asks
+for `nvidia-container-toolkit=1.18.2-1` and its three companion packages at
+the same version — which is why the Ubuntu install line carries
+`--allow-downgrades`. Two things it leaves to you:
+
+```
+sudo apt-mark hold nvidia-container-toolkit nvidia-container-toolkit-base \
+    libnvidia-container1 libnvidia-container-tools
+sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+```
+
+The hold is what keeps the next `apt upgrade` from putting 1.20.1 back. The
+regenerate is needed because the staleness check above looks only for the
+driver version in the file, so a specification left by a newer toolkit counts
+as current and `gpu` will not rewrite it: the version that cannot be parsed
+survives the downgrade. Arch is not pinned — podman 6.1.2 there reads 0.7.0
+without complaint.
 
 **`no terminal to confirm '...'`.** The installer asks before every command that
 runs as root and there is no terminal to ask on. This appears in a script, a
