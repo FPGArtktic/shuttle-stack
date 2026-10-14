@@ -8,7 +8,7 @@
 [![latest tag](https://img.shields.io/github/v/tag/FPGArtktic/shuttle-stack)](https://github.com/FPGArtktic/shuttle-stack/tags)
 [![licence: GPL-3.0-only](https://img.shields.io/badge/licence-GPL--3.0--only-blue.svg)](LICENSE)
 
-> ### v1.0.0 is out — the candidate asked to be broken, and Ubuntu obliged
+> ### v1.1.0 is out — Debian 13, and the fix a machine with no card needs
 >
 > Six of the nine milestones are closed against their own acceptance
 > numbers: the inference layer, the delegate, the measured behaviour, the
@@ -28,6 +28,18 @@
 > directories that have to sit beside it, and run alone it fails only after
 > using `sudo` and fetching seven gigabytes. The asset is there to verify a
 > pinned installer, not to run without the tree.
+>
+> **What v1.1.0 adds.** A third distribution. Debian 13 and newer is
+> detected without `--force-distro` and has a row of its own in the
+> package table: trixie's podman 5.4 reads the CDI specification the
+> current NVIDIA toolkit writes, so the pin Ubuntu needs is not applied
+> there. `detect` and `plan` are verified on Debian 13.6 with podman
+> 5.4.2; the phases that change the system are not measured there yet.
+>
+> **And the fix a machine with no card needs.** Run with `--no-gpu`, the
+> `host` phase ended on `missing_gpu: unbound variable` before it
+> installed anything, on every distribution, because `set -u` counts a
+> declared but unassigned array as unset.
 >
 > **What the candidate turned up.** `v1.0.0-rc1` asked to be broken and
 > Ubuntu 24.04 broke it. On hardware with a GPU the `gpu` phase stopped at
