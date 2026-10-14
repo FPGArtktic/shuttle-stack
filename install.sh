@@ -55,6 +55,15 @@ declare -rA DISTRO=(
 	[arch.packages]="podman passt jq curl"
 	[arch.gpu_packages]="nvidia-container-toolkit"
 	[arch.gpu_repo]=""
+	[debian.refresh]="apt-get update"
+	[debian.install]="apt-get install -y"
+	[debian.query]=dpkg_installed
+	[debian.packages]="podman passt uidmap jq curl"
+	# Trixie ships podman 5.4, which reads the cdiVersion 0.7.0 the
+	# current toolkit writes, so the version pin Ubuntu needs below
+	# buys nothing here and the newest toolkit is the one to ask for.
+	[debian.gpu_packages]="nvidia-container-toolkit"
+	[debian.gpu_repo]=nvidia_apt_repo
 	[ubuntu.refresh]="apt-get update"
 	# --allow-downgrades: the pinned toolkit is older than the one NVIDIA's
 	# repository now offers, and apt refuses a downgrade under -y without it.
@@ -175,7 +184,8 @@ Options:
   --long-model REPO FILE     Hugging Face GGUF for shuttle-long
   --fast-model REPO FILE     Hugging Face GGUF for shuttle-fast
   --draft-model REPO FILE    Hugging Face GGUF for the draft model
-  --force-distro arch|ubuntu skip distribution detection (tests only)
+  --force-distro NAME        skip distribution detection (tests only);
+                             arch, debian or ubuntu
   --bench-tokens N           prompt size for bench; repeat for several
   --prefix DIR               models and KV cache location
                              (default: ~/.local/share/shuttle)
@@ -312,8 +322,8 @@ set_value()
 		[[ $2 == /* ]] || usage_die "--prefix needs an absolute path"
 		data_dir=$2 ;;
 	--force-distro)
-		[[ $2 == arch || $2 == ubuntu ]] ||
-			usage_die "--force-distro takes arch or ubuntu"
+		[[ $2 == arch || $2 == debian || $2 == ubuntu ]] ||
+			usage_die "--force-distro takes arch, debian or ubuntu"
 		force_distro=$2 ;;
 	esac
 }
@@ -412,15 +422,17 @@ wanted()
 	return 1
 }
 
+# Debian's VERSION_ID is "13" where Ubuntu's is "24.04", so a missing
+# minor component counts as zero rather than failing to parse: one
+# comparison then serves both.
 version_code()
 {
 	local major minor
 
 	IFS=. read -r major minor _ <<< "$1"
 	minor=${minor%%[!0-9]*}
-	[[ $major =~ ^[0-9]+$ && $minor =~ ^[0-9]+$ ]] ||
-		die "cannot parse version '$1'"
-	printf '%d\n' $(( 10#$major * 100 + 10#$minor ))
+	[[ $major =~ ^[0-9]+$ ]] || die "cannot parse version '$1'"
+	printf '%d\n' $(( 10#$major * 100 + 10#${minor:-0} ))
 }
 
 os_field()
@@ -511,13 +523,18 @@ fact_distro()
 	elif [[ $id == arch ]]; then
 		distro=arch
 		fact distro "arch (rolling)" ok
+	elif [[ $id == debian ]] &&
+	     (( $(version_code "$version") >= 1300 )); then
+		distro=debian
+		fact distro "debian $version" ok
 	elif [[ $id == ubuntu ]] &&
 	     (( $(version_code "$version") >= 2404 )); then
 		distro=ubuntu
 		fact distro "ubuntu $version" ok
 	else
 		die "unsupported distribution '$id $version'" \
-			"(arch or ubuntu >= 24.04; --force-distro for tests)"
+			"(arch, debian >= 13 or ubuntu >= 24.04;" \
+			"--force-distro for tests)"
 	fi
 }
 
