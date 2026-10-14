@@ -159,6 +159,7 @@ measurement that earned each line.
 | Audit log | working — one JSONL line per call in `.shuttle/audit.jsonl`, success or failure |
 | Citation grounding | working — a quoted span absent from the source is listed rather than trusted; compared without markup, wrapping or spacing |
 | Ubuntu 24.04 | working — installed on hardware with a GPU, and the stack runs there; it needed the NVIDIA toolkit held at 1.18.2-1, because podman 4.9 cannot read the CDI specification 1.19 and later write. Every number below is still the Arch machine's |
+| Debian 13 | detection and the package table are in, and `detect plan` runs there on podman 5.4.2 — which reads cdiVersion 0.7.0, so the Ubuntu pin is not needed. The phases that change the system are **not measured** there yet |
 
 Neither milestone includes any of the following, and no placeholders are left
 for them:
@@ -186,7 +187,7 @@ does, it does well.
 
 ## Requirements
 
-- Arch Linux, or Ubuntu 24.04 or newer.
+- Arch Linux, Debian 13 or newer, or Ubuntu 24.04 or newer.
 - Podman 4.9 or newer, rootless, on cgroup v2. The installer adds the package,
   the subuid and subgid ranges and `loginctl enable-linger` if they are absent.
 - `bash` 5, `curl` and `jq` — that is the whole of what `install.sh` needs,
@@ -233,7 +234,7 @@ evals.reduction` repeats them on yours.
 
 | | |
 |---|---|
-| Arch Linux, or Ubuntu 24.04 or newer | the installer knows two distributions |
+| Arch, Debian 13+, or Ubuntu 24.04+ | the installer knows three distributions |
 | Podman 4.9+, rootless | the installer adds it, the subuid ranges and linger if absent |
 | `bash` 5, `curl`, `jq` | all `install.sh` needs; it is shell and no Python |
 | `uv` | for the delegate, which is Python. `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
@@ -1331,7 +1332,7 @@ Every flag is shown by `./install.sh --help`.
 | `--draft-model REPO FILE` | the same for the draft model |
 | `--bench-tokens N` | prompt size for `bench`; repeat the flag for several |
 | `--prefix DIR` | where the models and the KV cache live |
-| `--force-distro arch\|ubuntu` | skip detection; for tests only |
+| `--force-distro NAME` | `arch`, `debian` or `ubuntu`; skip detection, for tests only |
 
 `HF_TOKEN` in the environment is sent to Hugging Face. It is written to a
 header file under a temporary directory, so it appears neither in the printed
