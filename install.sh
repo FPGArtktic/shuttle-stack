@@ -1068,7 +1068,10 @@ install_packages()
 # third-party apt source written as root.
 host_packages()
 {
-	local -a base gpu missing_base missing_gpu
+	# set -u counts a declared but unassigned array as unset, and with
+	# --no-gpu neither of these is ever assigned: the empty assignment
+	# is what makes the expansions below legal.
+	local -a base missing_base gpu=() missing_gpu=()
 	local repo=${DISTRO[$distro.gpu_repo]}
 
 	read -ra base <<< "${DISTRO[$distro.packages]}"
