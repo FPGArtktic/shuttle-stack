@@ -132,7 +132,7 @@ main()
 	check_python
 	check_mcp_json
 	check_quadlets
-	for distro in ubuntu arch; do
+	for distro in ubuntu debian arch; do
 		check_dry_run "$distro"
 	done
 }

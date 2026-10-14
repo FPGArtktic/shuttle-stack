@@ -92,7 +92,7 @@ as `Co-developed-by:` or a tool attribution, go after it.
 4. `tests/delegate.sh`, the delegate's own suite, which talks to no
    llama-server
 5. `./install.sh detect plan --dry-run --force-distro ubuntu`, then the
-   same with `--force-distro arch`
+   same with `--force-distro debian` and `--force-distro arch`
 
 It needs bash 5, shellcheck, curl, jq and `uv`, and neither root nor a
 GPU. Steps 3 and 4 are skipped on a commit that predates `delegate/`,
